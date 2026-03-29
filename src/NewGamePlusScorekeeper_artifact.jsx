@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 
 // ─── SUPABASE CONFIG ──────────────────────────────────────────────────────────
-// Replace these with your actual Supabase project values after setup
 const SUPABASE_URL = "https://zrsyceorfasndxrpwqhd.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_ZxDV4_n9VAJCYIQ2U5Cycg_p-QqY-PP";
 
@@ -46,10 +45,6 @@ const supabase = {
         body: JSON.stringify({ row_id: id }),
       });
       return { error: res.ok ? null : await res.json() };
-    },
-  }),
-};
-      return { data: res.ok ? data : [], error: res.ok ? null : data };
     },
   }),
 };
@@ -123,7 +118,6 @@ const StatsView = ({ onBack }) => {
 
         setGames(allGames);
 
-        // Aggregate per-player stats
         const playerMap = {};
         allResults.forEach(r => {
           if (!playerMap[r.player_name]) {
@@ -194,7 +188,6 @@ const StatsView = ({ onBack }) => {
 
         {!loading && !error && (
           <>
-            {/* Tab bar */}
             <div className="flex gap-2 mb-6 bg-purple-950 p-1 rounded-lg">
               {tabs.map(t => (
                 <button key={t} onClick={() => setActiveTab(t)}
@@ -204,7 +197,6 @@ const StatsView = ({ onBack }) => {
               ))}
             </div>
 
-            {/* LEADERBOARD TAB */}
             {activeTab === "leaderboard" && (
               <div className="space-y-3">
                 {stats.length === 0 && <div className="text-center py-12 text-purple-400">No games recorded yet. Play some games!</div>}
@@ -232,7 +224,6 @@ const StatsView = ({ onBack }) => {
               </div>
             )}
 
-            {/* PER-PLAYER TAB */}
             {activeTab === "per-player" && (
               <div className="space-y-4">
                 {stats.length === 0 && <div className="text-center py-12 text-purple-400">No games recorded yet.</div>}
@@ -260,7 +251,6 @@ const StatsView = ({ onBack }) => {
               </div>
             )}
 
-            {/* RECENT GAMES TAB */}
             {activeTab === "recent games" && (
               <div className="space-y-3">
                 {games.length === 0 && <div className="text-center py-12 text-purple-400">No games recorded yet.</div>}
@@ -664,12 +654,11 @@ export default function NewGamePlusScorekeeper() {
 
   const thankTheCreator = async () => {
     setPrayerAnimating(true);
-    setPrayerCount(c => c + 1);
+    setPrayerCount(c => (c ?? 0) + 1);
     setTimeout(() => setPrayerAnimating(false), 600);
     await supabase.from("counters").increment("thank_the_creator");
   };
 
-  // ── Save game to Supabase ──────────────────────────────────────────────────
   const saveGameToSupabase = useCallback(async (finalPlayers, endedEarly, finalTargetBall, currentShotLog) => {
     setSavingGame(true);
     setSaveError(null);
@@ -866,7 +855,7 @@ export default function NewGamePlusScorekeeper() {
           </div>
         )}
 
-        {/* Header */}        
+        {/* Header */}
         <div className="flex justify-between items-center mb-4">
           <h1 className="text-2xl font-bold">New Game +</h1>
           <div className="flex gap-2 items-center">
