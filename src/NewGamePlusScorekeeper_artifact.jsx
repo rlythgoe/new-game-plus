@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from "react";
 // ─── SUPABASE CONFIG ──────────────────────────────────────────────────────────
 // Replace these with your actual Supabase project values after setup
 const SUPABASE_URL = "https://zrsyceorfasndxrpwqhd.supabase.co";
-const SUPABASE_ANON_KEY = "sb_secret_RV8Nn_8sF-_OJfa4Lyyfcg_9HgCpyQw";
+const SUPABASE_ANON_KEY = "sb_publishable_ZxDV4_n9VAJCYIQ2U5Cycg_p-QqY-PP";
 
 const supabase = {
   from: (table) => ({
