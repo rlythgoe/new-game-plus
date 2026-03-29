@@ -31,20 +31,24 @@ const supabase = {
           "apikey": SUPABASE_ANON_KEY,
           "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
         },
-    increment: async (id) => {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/increment_counter`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "apikey": SUPABASE_ANON_KEY,
-        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-        },
-    body: JSON.stringify({ row_id: id }),
-  });
-  return { error: res.ok ? null : await res.json() };
-},
       });
       const data = await res.json();
+      return { data: res.ok ? data : [], error: res.ok ? null : data };
+    },
+    increment: async (id) => {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/increment_counter`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": SUPABASE_ANON_KEY,
+          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+        },
+        body: JSON.stringify({ row_id: id }),
+      });
+      return { error: res.ok ? null : await res.json() };
+    },
+  }),
+};
       return { data: res.ok ? data : [], error: res.ok ? null : data };
     },
   }),
@@ -722,13 +726,15 @@ export default function NewGamePlusScorekeeper() {
     if (winner && !gameSaved && !savingGame && players.length > 0) {
       saveGameToSupabase(players, gameEndedEarly, targetBall, shotLog);
     }
+  }, [winner]);
+
+  // Load prayer count on mount
   useEffect(() => {
     supabase.from("counters").select("*", { filter: "id=eq.thank_the_creator" })
       .then(({ data }) => {
-      if (data?.[0]) setPrayerCount(data[0].count);
-    });
-}, []);
-  }, [winner]);
+        if (data?.[0]) setPrayerCount(data[0].count);
+      });
+  }, []);
 
   // ── Stats view ────────────────────────────────────────────────────────────
   if (showStats) return <StatsView onBack={() => setShowStats(false)} />;
