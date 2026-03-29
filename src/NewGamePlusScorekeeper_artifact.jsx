@@ -335,6 +335,8 @@ export default function NewGamePlusScorekeeper() {
   const [saveError, setSaveError] = useState(null);
   const [gameSaved, setGameSaved] = useState(false);
   const [shotLog, setShotLog] = useState([]);
+  const [prayerCount, setPrayerCount] = useState(null);
+  const [prayerAnimating, setPrayerAnimating] = useState(false);
 
   const availablePlayers = [
     'Ryan', 'Joe', 'Gabby', 'Chase', 'Carlos', 'Spencer',
@@ -656,6 +658,13 @@ export default function NewGamePlusScorekeeper() {
     setShotLog([]); setGameId(null); setGameSaved(false); setSaveError(null);
   };
 
+  const thankTheCreator = async () => {
+    setPrayerAnimating(true);
+    setPrayerCount(c => c + 1);
+    setTimeout(() => setPrayerAnimating(false), 600);
+    await supabase.from("counters").increment("thank_the_creator");
+  };
+
   // ── Save game to Supabase ──────────────────────────────────────────────────
   const saveGameToSupabase = useCallback(async (finalPlayers, endedEarly, finalTargetBall, currentShotLog) => {
     setSavingGame(true);
@@ -713,6 +722,12 @@ export default function NewGamePlusScorekeeper() {
     if (winner && !gameSaved && !savingGame && players.length > 0) {
       saveGameToSupabase(players, gameEndedEarly, targetBall, shotLog);
     }
+  useEffect(() => {
+    supabase.from("counters").select("*", { filter: "id=eq.thank_the_creator" })
+      .then(({ data }) => {
+      if (data?.[0]) setPrayerCount(data[0].count);
+    });
+}, []);
   }, [winner]);
 
   // ── Stats view ────────────────────────────────────────────────────────────
@@ -845,10 +860,15 @@ export default function NewGamePlusScorekeeper() {
           </div>
         )}
 
-        {/* Header */}
+        {/* Header */}        
         <div className="flex justify-between items-center mb-4">
           <h1 className="text-2xl font-bold">New Game +</h1>
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
+            <button onClick={thankTheCreator}
+              className="flex items-center gap-1 bg-purple-700 hover:bg-purple-600 px-3 py-2 rounded-lg text-sm font-bold">
+              <span className={prayerAnimating ? 'animate-bounce inline-block' : 'inline-block'}>🙏</span>
+              <span className="text-purple-300 text-xs">{prayerCount ?? '...'}</span>
+            </button>
             <button onClick={() => setShowStats(true)} className="p-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-bold">📊</button>
             <button onClick={undo} disabled={history.length === 0} className="p-2 bg-yellow-600 rounded-lg disabled:opacity-50 text-sm font-bold">↩ Undo</button>
             {!winner && <button onClick={() => setShowEndGameConfirm(true)} className="p-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-bold">⏱️ End</button>}
