@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 
 // ─── SUPABASE CONFIG ──────────────────────────────────────────────────────────
 // Replace these with your actual Supabase project values after setup
-const SUPABASE_URL = "https://YOUR_PROJECT.supabase.co";
-const SUPABASE_ANON_KEY = "YOUR_ANON_KEY";
+const SUPABASE_URL = "https://zrsyceorfasndxrpwqhd.supabase.co";
+const SUPABASE_ANON_KEY = "sb_secret_RV8Nn_8sF-_OJfa4Lyyfcg_9HgCpyQw";
 
 const supabase = {
   from: (table) => ({
