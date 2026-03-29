@@ -31,6 +31,18 @@ const supabase = {
           "apikey": SUPABASE_ANON_KEY,
           "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
         },
+    increment: async (id) => {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/increment_counter`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+        },
+    body: JSON.stringify({ row_id: id }),
+  });
+  return { error: res.ok ? null : await res.json() };
+},
       });
       const data = await res.json();
       return { data: res.ok ? data : [], error: res.ok ? null : data };
