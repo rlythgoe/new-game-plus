@@ -334,7 +334,7 @@ export default function NewGamePlusScorekeeper() {
 
   const availablePlayers = [
     'Ryan', 'Joe', 'Gabby', 'Chase', 'Carlos', 'Spencer',
-    'Shad', 'Rai', 'James', 'Mike', 'Heber', 'Zach'
+    'Shad', 'Nate', 'James', 'Mike', 'Heber', 'Zach'
   ];
 
   const logShot = useCallback((playerName, shotType, ballNumber = null, result = null) => {
