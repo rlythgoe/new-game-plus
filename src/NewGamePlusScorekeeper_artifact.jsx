@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 
 // ─── SUPABASE CONFIG ──────────────────────────────────────────────────────────
 const SUPABASE_URL = "https://zrsyceorfasndxrpwqhd.supabase.co";
@@ -93,71 +93,52 @@ const StatCard = ({ label, value, sub, color = "purple" }) => {
 
 // ─── STATS VIEW ───────────────────────────────────────────────────────────────
 
+// ─── SEASON HELPERS ───────────────────────────────────────────────────────────
+
+const getQuarterKey = (date) => {
+  const d = new Date(date);
+  const q = Math.floor(d.getMonth() / 3) + 1;
+  return `Q${q} ${d.getFullYear()}`;
+};
+
+const getCurrentQuarterKey = () => getQuarterKey(new Date());
+
+const quarterStart = (key) => {
+  const [q, year] = key.split(" ");
+  const month = (parseInt(q[1]) - 1) * 3;
+  return new Date(parseInt(year), month, 1);
+};
+
+const quarterEnd = (key) => {
+  const [q, year] = key.split(" ");
+  const month = parseInt(q[1]) * 3;
+  return new Date(parseInt(year), month, 1);
+};
+
+// ─── STATS VIEW ───────────────────────────────────────────────────────────────
+
 const StatsView = ({ onBack }) => {
-  const [stats, setStats] = useState([]);
-  const [games, setGames] = useState([]);
+  const [allGames, setAllGames] = useState([]);
+  const [allResults, setAllResults] = useState([]);
+  const [allShots, setAllShots] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState("leaderboard");
+  const [selectedSeason, setSelectedSeason] = useState(getCurrentQuarterKey());
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
       try {
         const [gamesRes, resultsRes, shotsRes] = await Promise.all([
-          supabase.from("games").select("*", { order: "played_at.desc", limit: 50 }),
+          supabase.from("games").select("*", { order: "played_at.desc", limit: 500 }),
           supabase.from("game_results").select("*"),
           supabase.from("shots").select("*"),
         ]);
-
         if (gamesRes.error) throw new Error("Could not load games");
-
-        const allGames = gamesRes.data || [];
-        const allResults = resultsRes.data || [];
-        const allShots = shotsRes.data || [];
-
-        setGames(allGames);
-
-        const playerMap = {};
-        allResults.forEach(r => {
-          if (!playerMap[r.player_name]) {
-            playerMap[r.player_name] = {
-              name: r.player_name,
-              games: 0, wins: 0, totalScore: 0, bestScore: -Infinity,
-              totalBallsPocketed: 0, totalRicochets: 0,
-              totalScratches: 0, totalDeathRolls: 0, totalDeaths: 0,
-              placements: [],
-            };
-          }
-          const p = playerMap[r.player_name];
-          p.games++;
-          if (r.placement === 1) p.wins++;
-          p.totalScore += r.final_score;
-          if (r.final_score > p.bestScore) p.bestScore = r.final_score;
-          p.placements.push(r.placement);
-        });
-
-        allShots.forEach(s => {
-          if (!playerMap[s.player_name]) return;
-          const p = playerMap[s.player_name];
-          if (s.shot_type === "hit") p.totalBallsPocketed++;
-          if (s.shot_type === "ricochet") { p.totalBallsPocketed++; p.totalRicochets++; }
-          if (s.shot_type === "scratch" || s.shot_type === "scratch_pocket") p.totalScratches++;
-          if (s.shot_type === "death_roll") p.totalDeathRolls++;
-          if (s.shot_type === "death_roll" && s.result === "ghost") p.totalDeaths++;
-        });
-
-        const compiled = Object.values(playerMap).map(p => ({
-          ...p,
-          winRate: p.games > 0 ? ((p.wins / p.games) * 100).toFixed(0) : 0,
-          avgScore: p.games > 0 ? (p.totalScore / p.games).toFixed(0) : 0,
-          avgPlacement: p.placements.length > 0
-            ? (p.placements.reduce((a, b) => a + b, 0) / p.placements.length).toFixed(1)
-            : null,
-        }));
-
-        compiled.sort((a, b) => b.wins - a.wins || b.winRate - a.winRate);
-        setStats(compiled);
+        setAllGames(gamesRes.data || []);
+        setAllResults(resultsRes.data || []);
+        setAllShots(shotsRes.data || []);
       } catch (e) {
         setError(e.message);
       } finally {
@@ -167,15 +148,104 @@ const StatsView = ({ onBack }) => {
     load();
   }, []);
 
+  // Build list of all seasons that have games, most recent first
+  const seasons = useMemo(() => {
+    const keys = new Set(allGames.map(g => getQuarterKey(g.played_at)));
+    return ["All Time", ...Array.from(keys).sort((a, b) => quarterStart(b) - quarterStart(a))];
+  }, [allGames]);
+
+  // Filter games/results/shots to the selected season
+  const filteredGameIds = useMemo(() => {
+    if (selectedSeason === "All Time") return new Set(allGames.map(g => g.id));
+    const start = quarterStart(selectedSeason);
+    const end = quarterEnd(selectedSeason);
+    return new Set(
+      allGames
+        .filter(g => { const d = new Date(g.played_at); return d >= start && d < end; })
+        .map(g => g.id)
+    );
+  }, [allGames, selectedSeason]);
+
+  const games = useMemo(() =>
+    allGames.filter(g => filteredGameIds.has(g.id)),
+    [allGames, filteredGameIds]);
+
+  const stats = useMemo(() => {
+    const filteredResults = allResults.filter(r => filteredGameIds.has(r.game_id));
+    const filteredShots = allShots.filter(s => filteredGameIds.has(s.game_id));
+
+    const playerMap = {};
+    filteredResults.forEach(r => {
+      if (!playerMap[r.player_name]) {
+        playerMap[r.player_name] = {
+          name: r.player_name,
+          games: 0, wins: 0, totalScore: 0, bestScore: -Infinity,
+          totalBallsPocketed: 0, totalRicochets: 0,
+          totalScratches: 0, totalDeathRolls: 0, totalDeaths: 0,
+          placements: [],
+        };
+      }
+      const p = playerMap[r.player_name];
+      p.games++;
+      if (r.placement === 1) p.wins++;
+      p.totalScore += r.final_score;
+      if (r.final_score > p.bestScore) p.bestScore = r.final_score;
+      p.placements.push(r.placement);
+    });
+
+    filteredShots.forEach(s => {
+      if (!playerMap[s.player_name]) return;
+      const p = playerMap[s.player_name];
+      if (s.shot_type === "hit") p.totalBallsPocketed++;
+      if (s.shot_type === "ricochet") { p.totalBallsPocketed++; p.totalRicochets++; }
+      if (s.shot_type === "scratch" || s.shot_type === "scratch_pocket") p.totalScratches++;
+      if (s.shot_type === "death_roll") p.totalDeathRolls++;
+      if (s.shot_type === "death_roll" && s.result === "ghost") p.totalDeaths++;
+    });
+
+    return Object.values(playerMap).map(p => ({
+      ...p,
+      winRate: p.games > 0 ? ((p.wins / p.games) * 100).toFixed(0) : 0,
+      avgScore: p.games > 0 ? (p.totalScore / p.games).toFixed(0) : 0,
+      avgPlacement: p.placements.length > 0
+        ? (p.placements.reduce((a, b) => a + b, 0) / p.placements.length).toFixed(1)
+        : null,
+    })).sort((a, b) => b.wins - a.wins || b.winRate - a.winRate);
+  }, [allResults, allShots, filteredGameIds]);
+
   const tabs = ["leaderboard", "per-player", "recent games"];
+  const isCurrentSeason = selectedSeason === getCurrentQuarterKey();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-900 to-blue-900 text-white p-4">
       <div className="max-w-4xl mx-auto">
-        <div className="flex items-center gap-3 mb-6">
+
+        {/* Header */}
+        <div className="flex items-center gap-3 mb-4">
           <button onClick={onBack} className="bg-purple-700 hover:bg-purple-600 px-3 py-2 rounded-lg text-sm font-bold">← Back</button>
-          <h1 className="text-2xl font-black">📊 All-Time Stats</h1>
+          <h1 className="text-2xl font-black">📊 Stats</h1>
         </div>
+
+        {/* Season selector */}
+        {!loading && !error && (
+          <div className="mb-5">
+            <div className="flex items-center gap-2 flex-wrap">
+              {seasons.map(s => (
+                <button key={s} onClick={() => setSelectedSeason(s)}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-all ${
+                    selectedSeason === s
+                      ? s === "All Time" ? 'bg-blue-600 text-white' : 'bg-yellow-500 text-black'
+                      : 'bg-purple-800 text-purple-300 hover:text-white'
+                  }`}>
+                  {s === getCurrentQuarterKey() ? `${s} ⚡` : s}
+                </button>
+              ))}
+            </div>
+            {isCurrentSeason && (
+              <div className="text-xs text-purple-400 mt-2">⚡ Current season — stats reset each quarter, all history preserved</div>
+            )}
+          </div>
+        )}
 
         {loading && <div className="text-center py-16 text-purple-300 animate-pulse text-xl">Loading stats...</div>}
         {error && (
@@ -199,7 +269,7 @@ const StatsView = ({ onBack }) => {
 
             {activeTab === "leaderboard" && (
               <div className="space-y-3">
-                {stats.length === 0 && <div className="text-center py-12 text-purple-400">No games recorded yet. Play some games!</div>}
+                {stats.length === 0 && <div className="text-center py-12 text-purple-400">No games in {selectedSeason} yet.</div>}
                 {stats.map((p, i) => (
                   <div key={p.name} className={`p-4 rounded-xl ${i === 0 ? 'bg-yellow-700 ring-2 ring-yellow-400' : 'bg-purple-800'}`}>
                     <div className="flex items-center gap-3 mb-3">
@@ -226,7 +296,7 @@ const StatsView = ({ onBack }) => {
 
             {activeTab === "per-player" && (
               <div className="space-y-4">
-                {stats.length === 0 && <div className="text-center py-12 text-purple-400">No games recorded yet.</div>}
+                {stats.length === 0 && <div className="text-center py-12 text-purple-400">No games in {selectedSeason} yet.</div>}
                 {stats.map((p) => (
                   <div key={p.name} className="bg-purple-800 rounded-xl p-4">
                     <div className="text-xl font-black mb-3">{p.name}</div>
@@ -253,7 +323,7 @@ const StatsView = ({ onBack }) => {
 
             {activeTab === "recent games" && (
               <div className="space-y-3">
-                {games.length === 0 && <div className="text-center py-12 text-purple-400">No games recorded yet.</div>}
+                {games.length === 0 && <div className="text-center py-12 text-purple-400">No games in {selectedSeason} yet.</div>}
                 {games.map((g) => (
                   <div key={g.id} className="bg-purple-800 rounded-xl p-4">
                     <div className="flex justify-between items-start mb-2">
@@ -329,12 +399,12 @@ export default function NewGamePlusScorekeeper() {
   const [saveError, setSaveError] = useState(null);
   const [gameSaved, setGameSaved] = useState(false);
   const [shotLog, setShotLog] = useState([]);
-  const [prayerCount, setPrayerCount] = useState(null);
-  const [prayerAnimating, setPrayerAnimating] = useState(false);
+  const [showManagePlayers, setShowManagePlayers] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(null);
 
   const availablePlayers = [
     'Ryan', 'Joe', 'Gabby', 'Chase', 'Carlos', 'Spencer',
-    'Shad', 'Nate', 'James', 'Mike', 'Heber', 'Zach'
+    'Shad', 'Rai', 'James', 'Mike', 'Heber', 'Zach'
   ];
 
   const logShot = useCallback((playerName, shotType, ballNumber = null, result = null) => {
@@ -345,7 +415,7 @@ export default function NewGamePlusScorekeeper() {
     if (selectedPlayers.includes(playerName)) {
       setSelectedPlayers(selectedPlayers.filter(p => p !== playerName));
     } else {
-      if (selectedPlayers.length < 8) setSelectedPlayers([...selectedPlayers, playerName]);
+      if (!selectedPlayers.includes(playerName)) setSelectedPlayers([...selectedPlayers, playerName]);
     }
   };
 
@@ -652,11 +722,23 @@ export default function NewGamePlusScorekeeper() {
     setShotLog([]); setGameId(null); setGameSaved(false); setSaveError(null);
   };
 
-  const thankTheCreator = async () => {
-    setPrayerAnimating(true);
-    setPrayerCount(c => (c ?? 0) + 1);
-    setTimeout(() => setPrayerAnimating(false), 600);
-    await supabase.from("counters").increment("thank_the_creator");
+  const addPlayer = (name) => {
+    const lowestScore = players.length > 0 ? Math.min(...players.map(p => p.score)) : 0;
+    const newPlayer = { id: Date.now(), name, score: lowestScore, isPoisoned: false, poisonLevel: 0, isDead: false };
+    const newPlayers = [...players, newPlayer];
+    setPlayers(newPlayers);
+    setNumPlayers(newPlayers.length);
+  };
+
+  const removePlayer = (index) => {
+    const newPlayers = players.filter((_, i) => i !== index);
+    setPlayers(newPlayers);
+    setNumPlayers(newPlayers.length);
+    setGamblingPlayers(prev => prev.filter(i => i !== index).map(i => i > index ? i - 1 : i));
+    if (currentPlayerIndex >= newPlayers.length) setCurrentPlayerIndex(0);
+    else if (currentPlayerIndex === index) setCurrentPlayerIndex(index % newPlayers.length || 0);
+    setConfirmRemove(null);
+    if (newPlayers.length < 2) setShowManagePlayers(false);
   };
 
   const saveGameToSupabase = useCallback(async (finalPlayers, endedEarly, finalTargetBall, currentShotLog) => {
@@ -716,14 +798,6 @@ export default function NewGamePlusScorekeeper() {
       saveGameToSupabase(players, gameEndedEarly, targetBall, shotLog);
     }
   }, [winner]);
-
-  // Load prayer count on mount
-  useEffect(() => {
-    supabase.from("counters").select("*", { filter: "id=eq.thank_the_creator" })
-      .then(({ data }) => {
-        if (data?.[0]) setPrayerCount(data[0].count);
-      });
-  }, []);
 
   // ── Stats view ────────────────────────────────────────────────────────────
   if (showStats) return <StatsView onBack={() => setShowStats(false)} />;
@@ -855,16 +929,69 @@ export default function NewGamePlusScorekeeper() {
           </div>
         )}
 
+        {/* Manage Players Modal */}
+        {showManagePlayers && (
+          <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
+            <div className="bg-gray-900 border-2 border-purple-500 p-6 rounded-2xl max-w-sm w-full mx-4 shadow-2xl">
+              <div className="flex justify-between items-center mb-5">
+                <h2 className="text-xl font-black">👥 Manage Players</h2>
+                <button onClick={() => { setShowManagePlayers(false); setConfirmRemove(null); }}
+                  className="text-gray-400 hover:text-white text-2xl font-bold">✕</button>
+              </div>
+
+              {/* Current players */}
+              <div className="mb-5">
+                <div className="text-xs text-purple-300 font-semibold mb-2 uppercase tracking-wide">In Game</div>
+                <div className="space-y-2">
+                  {players.map((player, index) => (
+                    <div key={player.id} className="flex items-center justify-between bg-purple-800 px-3 py-2 rounded-lg">
+                      <div>
+                        <span className="font-semibold">{player.name}</span>
+                        <span className="text-purple-300 text-sm ml-2">{player.score} pts</span>
+                        {player.isDead && <span className="text-red-400 text-xs ml-2">💀</span>}
+                      </div>
+                      {confirmRemove === index ? (
+                        <div className="flex gap-2">
+                          <button onClick={() => setConfirmRemove(null)} className="text-xs bg-gray-600 px-2 py-1 rounded">Cancel</button>
+                          <button onClick={() => removePlayer(index)} className="text-xs bg-red-600 px-2 py-1 rounded font-bold">Remove</button>
+                        </div>
+                      ) : (
+                        <button onClick={() => setConfirmRemove(index)}
+                          className="text-xs bg-red-800 hover:bg-red-600 px-2 py-1 rounded text-red-300 hover:text-white">✕</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Add players */}
+              {availablePlayers.filter(name => !players.find(p => p.name === name)).length > 0 && (
+                <div>
+                  <div className="text-xs text-purple-300 font-semibold mb-2 uppercase tracking-wide">
+                    Add Player — starts at {players.length > 0 ? Math.min(...players.map(p => p.score)) : 0} pts
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {availablePlayers
+                      .filter(name => !players.find(p => p.name === name))
+                      .map(name => (
+                        <button key={name} onClick={() => addPlayer(name)}
+                          className="bg-green-700 hover:bg-green-600 px-3 py-2 rounded-lg text-sm font-semibold text-left">
+                          + {name}
+                        </button>
+                      ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Header */}
         <div className="flex justify-between items-center mb-4">
           <h1 className="text-2xl font-bold">New Game +</h1>
           <div className="flex gap-2 items-center">
-            <button onClick={thankTheCreator}
-              className="flex items-center gap-1 bg-purple-700 hover:bg-purple-600 px-3 py-2 rounded-lg text-sm font-bold">
-              <span className={prayerAnimating ? 'animate-bounce inline-block' : 'inline-block'}>🙏</span>
-              <span className="text-purple-300 text-xs">{prayerCount ?? '...'}</span>
-            </button>
             <button onClick={() => setShowStats(true)} className="p-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-bold">📊</button>
+            {!winner && <button onClick={() => { setShowManagePlayers(true); setConfirmRemove(null); }} className="p-2 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm font-bold">👥</button>}
             <button onClick={undo} disabled={history.length === 0} className="p-2 bg-yellow-600 rounded-lg disabled:opacity-50 text-sm font-bold">↩ Undo</button>
             {!winner && <button onClick={() => setShowEndGameConfirm(true)} className="p-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-bold">⏱️ End</button>}
             <button onClick={resetGame} className="p-2 bg-red-600 rounded-lg text-sm font-bold">↺ Reset</button>
