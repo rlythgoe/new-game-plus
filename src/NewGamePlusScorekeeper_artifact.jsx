@@ -24,6 +24,7 @@ const supabase = {
       let url = `${SUPABASE_URL}/rest/v1/${table}?select=${columns}`;
       if (opts.order) url += `&order=${opts.order}`;
       if (opts.limit) url += `&limit=${opts.limit}`;
+      if (opts.offset) url += `&offset=${opts.offset}`;
       if (opts.filter) url += `&${opts.filter}`;
       const res = await fetch(url, {
         headers: {
@@ -117,6 +118,31 @@ const quarterEnd = (key) => {
 
 // ─── STATS VIEW ───────────────────────────────────────────────────────────────
 
+const fetchAllRows = async (table, columns = "*", options = {}, pageSize = 1000) => {
+  const rows = [];
+  let offset = 0;
+
+  while (true) {
+    const result = await supabase.from(table).select(columns, {
+      ...options,
+      limit: pageSize,
+      offset,
+    });
+
+    if (result.error) {
+      throw new Error(result.error.message || `Could not load ${table}`);
+    }
+
+    const page = result.data || [];
+    rows.push(...page);
+
+    if (page.length < pageSize) break;
+    offset += pageSize;
+  }
+
+  return rows;
+};
+
 const StatsView = ({ onBack }) => {
   const [allGames, setAllGames] = useState([]);
   const [allResults, setAllResults] = useState([]);
@@ -126,27 +152,27 @@ const StatsView = ({ onBack }) => {
   const [activeTab, setActiveTab] = useState("leaderboard");
   const [selectedSeason, setSelectedSeason] = useState(getCurrentQuarterKey());
 
-  useEffect(() => {
-    const load = async () => {
+  const loadStats = useCallback(async () => {
       setLoading(true);
       try {
-        const [gamesRes, resultsRes, shotsRes] = await Promise.all([
-          supabase.from("games").select("*", { order: "played_at.desc", limit: 500 }),
-          supabase.from("game_results").select("*"),
-          supabase.from("shots").select("*"),
+        const [games, results, shots] = await Promise.all([
+          fetchAllRows("games", "*", { order: "played_at.desc" }),
+          fetchAllRows("game_results"),
+          fetchAllRows("shots"),
         ]);
-        if (gamesRes.error) throw new Error("Could not load games");
-        setAllGames(gamesRes.data || []);
-        setAllResults(resultsRes.data || []);
-        setAllShots(shotsRes.data || []);
+        setAllGames(games);
+        setAllResults(results);
+        setAllShots(shots);
       } catch (e) {
         setError(e.message);
       } finally {
         setLoading(false);
       }
-    };
-    load();
-  }, []);
+    }, []);
+
+  useEffect(() => {
+    loadStats();
+  }, [loadStats]);
 
   // Build list of all seasons that have games, most recent first
   const seasons = useMemo(() => {
@@ -224,6 +250,13 @@ const StatsView = ({ onBack }) => {
         <div className="flex items-center gap-3 mb-4">
           <button onClick={onBack} className="bg-purple-700 hover:bg-purple-600 px-3 py-2 rounded-lg text-sm font-bold">← Back</button>
           <h1 className="text-2xl font-black">📊 Stats</h1>
+          <button
+            onClick={loadStats}
+            disabled={loading}
+            className="ml-auto bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-3 py-2 rounded-lg text-sm font-bold"
+          >
+            {loading ? "Refreshing..." : "↻ Refresh"}
+          </button>
         </div>
 
         {/* Season selector */}
