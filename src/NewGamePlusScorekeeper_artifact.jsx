@@ -1,4 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+} from "recharts";
 
 // ─── SUPABASE CONFIG ──────────────────────────────────────────────────────────
 const SUPABASE_URL = "https://zrsyceorfasndxrpwqhd.supabase.co";
@@ -24,7 +27,6 @@ const supabase = {
       let url = `${SUPABASE_URL}/rest/v1/${table}?select=${columns}`;
       if (opts.order) url += `&order=${opts.order}`;
       if (opts.limit) url += `&limit=${opts.limit}`;
-      if (opts.offset) url += `&offset=${opts.offset}`;
       if (opts.filter) url += `&${opts.filter}`;
       const res = await fetch(url, {
         headers: {
@@ -116,32 +118,161 @@ const quarterEnd = (key) => {
   return new Date(parseInt(year), month, 1);
 };
 
-// ─── STATS VIEW ───────────────────────────────────────────────────────────────
+// ─── GAME PROGRESS CHART (per-player cumulative points for one game) ──────────
 
-const fetchAllRows = async (table, columns = "*", options = {}, pageSize = 1000) => {
-  const rows = [];
-  let offset = 0;
+// Consistent color per player, assigned by seat order within the game.
+const PLAYER_LINE_COLORS = [
+  "#facc15", "#4ade80", "#38bdf8", "#f472b6",
+  "#fb923c", "#a78bfa", "#f87171", "#2dd4bf",
+];
+const colorForPlayerIndex = (i) => PLAYER_LINE_COLORS[i % PLAYER_LINE_COLORS.length];
 
-  while (true) {
-    const result = await supabase.from(table).select(columns, {
-      ...options,
-      limit: pageSize,
-      offset,
-    });
-
-    if (result.error) {
-      throw new Error(result.error.message || `Could not load ${table}`);
-    }
-
-    const page = result.data || [];
-    rows.push(...page);
-
-    if (page.length < pageSize) break;
-    offset += pageSize;
+// Every scoring event now logs its own point_delta at the moment it happens
+// (see logShot in the main app), including ones that used to be invisible to the
+// shot log: Triple Tap, poison ticks, and Death Roll / resurrection score resets,
+// and Abraham Clinkin' logs a row per affected player instead of just the shooter.
+// So the chart just sums point_delta for new games. Games saved before this change
+// won't have point_delta stored, so we fall back to the old inference for those —
+// which still can't fully capture the same handful of multi-player/legacy events.
+const legacyShotPointDelta = (shot) => {
+  const n = shot.ball_number ?? 0;
+  switch (shot.shot_type) {
+    case "hit": return n;
+    case "ricochet": return n * 2;
+    case "scratch": return -n;
+    case "scratch_pocket": return -(n + 3);
+    case "gamble_win": return n;
+    case "gamble_loss": return -n;
+    case "parlay_add": return n;
+    case "parlay_remove": return -n;
+    case "abraham_clinkin_made": return n;
+    case "abraham_clinkin_noScratch": return n;
+    default: return 0;
   }
+};
+const shotPointDelta = (shot) =>
+  shot.point_delta !== undefined && shot.point_delta !== null
+    ? shot.point_delta
+    : legacyShotPointDelta(shot);
 
+const shotDescription = (shot) => {
+  const n = shot.ball_number;
+  switch (shot.shot_type) {
+    case "hit": return `hit ball ${n}`;
+    case "ricochet": return `ricocheted ball ${n}`;
+    case "scratch": return `scratched on ball ${n}`;
+    case "scratch_pocket": return `scratched + pocketed ball ${n}`;
+    case "gamble_win": return `won the gamble (+${n})`;
+    case "gamble_loss": return `lost the gamble (-${n})`;
+    case "parlay_add": return `added ${n} parlay pts`;
+    case "parlay_remove": return `removed ${n} parlay pts`;
+    case "death_roll": return `death roll — ${shot.result ?? "?"}`;
+    case "death_reset": return "score reset (Death Roll / resurrection)";
+    case "poison_tick": return `poison tick (level ${n})`;
+    case "triple_tap": return "Triple Tap (score flipped)";
+    case "abraham_clinkin_made": return `Abraham Clinkin' — made it`;
+    case "abraham_clinkin_noScratch": return `Abraham Clinkin' — no scratch`;
+    case "abraham_clinkin_scratch": return `Abraham Clinkin' — scratched`;
+    default: return shot.shot_type.replace(/_/g, " ");
+  }
+};
+
+// Turns a flat, id-ordered shot log into cumulative-score rows suitable for a
+// multi-line chart: one row per shot, one column per player.
+const buildCumulativeSeries = (shots, playerNames) => {
+  const sorted = [...shots].sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+  const running = {};
+  playerNames.forEach((name) => { running[name] = 0; });
+
+  const rows = [{ shot: 0, who: "Start", detail: "", ...running }];
+  sorted.forEach((s, idx) => {
+    if (s.player_name in running) {
+      running[s.player_name] += shotPointDelta(s);
+    }
+    rows.push({
+      shot: idx + 1,
+      who: s.player_name,
+      detail: shotDescription(s),
+      ...running,
+    });
+  });
   return rows;
 };
+
+// Custom tooltip: shows which shot happened plus every player's running total.
+const GameProgressTooltip = ({ active, payload, label }) => {
+  if (!active || !payload || payload.length === 0) return null;
+  const point = payload[0].payload;
+  return (
+    <div className="bg-purple-950 border border-purple-600 rounded-lg p-2 text-xs shadow-lg">
+      <div className="font-bold mb-1">
+        Shot #{label}{point.who && point.who !== "Start" ? ` — ${point.who} ${point.detail}` : ""}
+      </div>
+      {payload.map((p) => (
+        <div key={p.dataKey} style={{ color: p.color }} className="font-semibold">
+          {p.dataKey}: {p.value}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const GameProgressChart = ({ playerNames, shots, loading, error }) => {
+  const series = useMemo(
+    () => buildCumulativeSeries(shots || [], playerNames),
+    [shots, playerNames]
+  );
+  // A game is an "exact" replay only if every shot has a real point_delta
+  // (i.e. it was played after this fix). Older games fall back to the legacy,
+  // best-effort inference and are labeled accordingly.
+  const isExact = useMemo(
+    () => (shots || []).every(s => s.point_delta !== undefined && s.point_delta !== null),
+    [shots]
+  );
+
+  if (loading) {
+    return <div className="text-center py-8 text-purple-300 animate-pulse text-sm">Loading shot-by-shot data...</div>;
+  }
+  if (error) {
+    return <div className="text-center py-8 text-red-400 text-sm">⚠️ Could not load shots: {error}</div>;
+  }
+  if (!shots || shots.length === 0) {
+    return <div className="text-center py-8 text-purple-400 text-sm">No shot-by-shot data recorded for this game.</div>;
+  }
+
+  return (
+    <div className="bg-purple-950 rounded-lg p-3 mt-2">
+      <div style={{ width: "100%", height: 260 }}>
+        <ResponsiveContainer>
+          <LineChart data={series} margin={{ top: 10, right: 12, left: -18, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#4c1d95" />
+            <XAxis
+              dataKey="shot" stroke="#c4b5fd" tick={{ fontSize: 11 }}
+              label={{ value: "Shot #", position: "insideBottom", offset: -2, fill: "#c4b5fd", fontSize: 11 }}
+            />
+            <YAxis stroke="#c4b5fd" tick={{ fontSize: 11 }} />
+            <Tooltip content={<GameProgressTooltip />} />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            {playerNames.map((name, i) => (
+              <Line
+                key={name} type="monotone" dataKey={name}
+                stroke={colorForPlayerIndex(i)} strokeWidth={2}
+                dot={{ r: 2 }} activeDot={{ r: 5 }}
+              />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="text-xs text-purple-400 mt-1">
+        {isExact
+          ? "Every scoring event — including gambles, poison, Triple Tap, and Death Roll resets — was logged as it happened, so this is an exact replay of the game."
+          : "This game was played before shot-by-shot point tracking was added, so a few event types (gambles, poison, Triple Tap, Death Roll resets) are approximated here."}
+      </div>
+    </div>
+  );
+};
+
+// ─── STATS VIEW ───────────────────────────────────────────────────────────────
 
 const StatsView = ({ onBack }) => {
   const [allGames, setAllGames] = useState([]);
@@ -152,27 +283,33 @@ const StatsView = ({ onBack }) => {
   const [activeTab, setActiveTab] = useState("leaderboard");
   const [selectedSeason, setSelectedSeason] = useState(getCurrentQuarterKey());
 
-  const loadStats = useCallback(async () => {
+  // Recent Games → per-game shot-by-shot chart
+  const [expandedGameId, setExpandedGameId] = useState(null);
+  const [gameShotsById, setGameShotsById] = useState({});
+  const [loadingShotsFor, setLoadingShotsFor] = useState(null);
+  const [shotsErrorFor, setShotsErrorFor] = useState({});
+
+  useEffect(() => {
+    const load = async () => {
       setLoading(true);
       try {
-        const [games, results, shots] = await Promise.all([
-          fetchAllRows("games", "*", { order: "played_at.desc" }),
-          fetchAllRows("game_results"),
-          fetchAllRows("shots"),
+        const [gamesRes, resultsRes, shotsRes] = await Promise.all([
+          supabase.from("games").select("*", { order: "played_at.desc", limit: 500 }),
+          supabase.from("game_results").select("*"),
+          supabase.from("shots").select("*"),
         ]);
-        setAllGames(games);
-        setAllResults(results);
-        setAllShots(shots);
+        if (gamesRes.error) throw new Error("Could not load games");
+        setAllGames(gamesRes.data || []);
+        setAllResults(resultsRes.data || []);
+        setAllShots(shotsRes.data || []);
       } catch (e) {
         setError(e.message);
       } finally {
         setLoading(false);
       }
-    }, []);
-
-  useEffect(() => {
-    loadStats();
-  }, [loadStats]);
+    };
+    load();
+  }, []);
 
   // Build list of all seasons that have games, most recent first
   const seasons = useMemo(() => {
@@ -242,6 +379,32 @@ const StatsView = ({ onBack }) => {
   const tabs = ["leaderboard", "per-player", "recent games"];
   const isCurrentSeason = selectedSeason === getCurrentQuarterKey();
 
+  // Detect a Recent Game click: toggle it open/closed, and pull that game's
+  // shot-by-shot data (cached after the first fetch) to feed the progress chart.
+  const toggleGameExpand = async (game) => {
+    if (expandedGameId === game.id) {
+      setExpandedGameId(null);
+      return;
+    }
+    setExpandedGameId(game.id);
+    if (gameShotsById[game.id]) return; // already pulled
+
+    setLoadingShotsFor(game.id);
+    setShotsErrorFor(prev => ({ ...prev, [game.id]: null }));
+    try {
+      const { data, error: shotsErr } = await supabase.from("shots").select("*", {
+        filter: `game_id=eq.${game.id}`,
+        order: "id.asc",
+      });
+      if (shotsErr) throw new Error(shotsErr.message || "Could not load shots");
+      setGameShotsById(prev => ({ ...prev, [game.id]: data || [] }));
+    } catch (e) {
+      setShotsErrorFor(prev => ({ ...prev, [game.id]: e.message }));
+    } finally {
+      setLoadingShotsFor(null);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-900 to-blue-900 text-white p-4">
       <div className="max-w-4xl mx-auto">
@@ -250,13 +413,6 @@ const StatsView = ({ onBack }) => {
         <div className="flex items-center gap-3 mb-4">
           <button onClick={onBack} className="bg-purple-700 hover:bg-purple-600 px-3 py-2 rounded-lg text-sm font-bold">← Back</button>
           <h1 className="text-2xl font-black">📊 Stats</h1>
-          <button
-            onClick={loadStats}
-            disabled={loading}
-            className="ml-auto bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-3 py-2 rounded-lg text-sm font-bold"
-          >
-            {loading ? "Refreshing..." : "↻ Refresh"}
-          </button>
         </div>
 
         {/* Season selector */}
@@ -359,20 +515,38 @@ const StatsView = ({ onBack }) => {
                 {games.length === 0 && <div className="text-center py-12 text-purple-400">No games in {selectedSeason} yet.</div>}
                 {games.map((g) => (
                   <div key={g.id} className="bg-purple-800 rounded-xl p-4">
-                    <div className="flex justify-between items-start mb-2">
-                      <div>
-                        <div className="font-bold">{g.player_names?.join(", ")}</div>
-                        <div className="text-xs text-purple-300">{g.player_count} players · Ball {g.final_ball ?? "?"} reached</div>
+                    <button
+                      onClick={() => toggleGameExpand(g)}
+                      className="w-full text-left"
+                      aria-expanded={expandedGameId === g.id}
+                    >
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <div className="font-bold flex items-center gap-1">
+                            <span className="text-purple-400 text-xs">{expandedGameId === g.id ? "▾" : "▸"}</span>
+                            {g.player_names?.join(", ")}
+                          </div>
+                          <div className="text-xs text-purple-300">{g.player_count} players · Ball {g.final_ball ?? "?"} reached</div>
+                        </div>
+                        <div className="text-right text-xs text-purple-400">
+                          {g.played_at ? new Date(g.played_at).toLocaleDateString() : ""}
+                          {g.ended_early && <div className="text-orange-400 font-semibold">⏱️ Early end</div>}
+                        </div>
                       </div>
-                      <div className="text-right text-xs text-purple-400">
-                        {g.played_at ? new Date(g.played_at).toLocaleDateString() : ""}
-                        {g.ended_early && <div className="text-orange-400 font-semibold">⏱️ Early end</div>}
+                      <div className="text-sm">
+                        <span className="text-yellow-400 font-bold">🏆 {g.winner_name}</span>
+                        <span className="text-gray-400 ml-2">— {g.winner_score} pts</span>
                       </div>
-                    </div>
-                    <div className="text-sm">
-                      <span className="text-yellow-400 font-bold">🏆 {g.winner_name}</span>
-                      <span className="text-gray-400 ml-2">— {g.winner_score} pts</span>
-                    </div>
+                    </button>
+
+                    {expandedGameId === g.id && (
+                      <GameProgressChart
+                        playerNames={g.player_names || []}
+                        shots={gameShotsById[g.id]}
+                        loading={loadingShotsFor === g.id}
+                        error={shotsErrorFor[g.id]}
+                      />
+                    )}
                   </div>
                 ))}
               </div>
@@ -440,8 +614,10 @@ export default function NewGamePlusScorekeeper() {
     'Shad', 'Rai', 'James', 'Mike', 'Heber', 'Zach'
   ];
 
-  const logShot = useCallback((playerName, shotType, ballNumber = null, result = null) => {
-    setShotLog(prev => [...prev, { player_name: playerName, shot_type: shotType, ball_number: ballNumber, result }]);
+  // point_delta is the *actual* score change caused by this event — the source of
+  // truth for the progress chart, instead of re-deriving it from shot_type later.
+  const logShot = useCallback((playerName, shotType, ballNumber = null, result = null, pointDelta = 0) => {
+    setShotLog(prev => [...prev, { player_name: playerName, shot_type: shotType, ball_number: ballNumber, result, point_delta: pointDelta }]);
   }, []);
 
   const togglePlayerSelection = (playerName) => {
@@ -496,6 +672,7 @@ export default function NewGamePlusScorekeeper() {
 
   const killPlayer = (playerIndex) => {
     const newPlayers = [...players];
+    const oldScore = newPlayers[playerIndex].score;
     const otherScores = newPlayers.filter((p, idx) => idx !== playerIndex && !p.isDead).map(p => p.score);
     if (otherScores.length === 0) {
       newPlayers[playerIndex].isDead = true;
@@ -507,6 +684,10 @@ export default function NewGamePlusScorekeeper() {
         newPlayers[playerIndex].score = nextLowest - 10;
         newPlayers[playerIndex].isDead = true;
       }
+    }
+    const delta = newPlayers[playerIndex].score - oldScore;
+    if (delta !== 0) {
+      logShot(newPlayers[playerIndex].name, 'death_reset', null, null, delta);
     }
     setPlayers(newPlayers);
   };
@@ -526,9 +707,14 @@ export default function NewGamePlusScorekeeper() {
         if (alivePlayersBelow.length > 0) {
           const lowestAlive = alivePlayersBelow.reduce((min, p) => p.score < min.score ? p : min);
           const lowestAliveIndex = newPlayers.findIndex(p => p === lowestAlive);
+          const oldScore = newPlayers[lowestAliveIndex].score;
           player.isDead = false;
           newPlayers[lowestAliveIndex].isDead = true;
           newPlayers[lowestAliveIndex].score = player.score - 10;
+          const delta = newPlayers[lowestAliveIndex].score - oldScore;
+          if (delta !== 0) {
+            logShot(newPlayers[lowestAliveIndex].name, 'death_reset', null, null, delta);
+          }
           changed = true;
         }
       }
@@ -592,7 +778,7 @@ export default function NewGamePlusScorekeeper() {
 
   const hitTargetBall = () => {
     setHistory(h => [...h, saveState()]);
-    logShot(players[currentPlayerIndex].name, 'hit', targetBall);
+    logShot(players[currentPlayerIndex].name, 'hit', targetBall, null, targetBall);
     const newPlayers = [...players];
     newPlayers[currentPlayerIndex].score += targetBall;
     setPlayers(checkForResurrection(newPlayers));
@@ -601,7 +787,7 @@ export default function NewGamePlusScorekeeper() {
 
   const ricochetShot = () => {
     setHistory(h => [...h, saveState()]);
-    logShot(players[currentPlayerIndex].name, 'ricochet', targetBall);
+    logShot(players[currentPlayerIndex].name, 'ricochet', targetBall, null, targetBall * 2);
     const newPlayers = [...players];
     newPlayers[currentPlayerIndex].score += targetBall * 2;
     setPlayers(checkForResurrection(newPlayers));
@@ -610,7 +796,7 @@ export default function NewGamePlusScorekeeper() {
 
   const scratchOnBall = (ballNumber) => {
     setHistory(h => [...h, saveState()]);
-    logShot(players[currentPlayerIndex].name, 'scratch', ballNumber);
+    logShot(players[currentPlayerIndex].name, 'scratch', ballNumber, null, -ballNumber);
     const newPlayers = [...players];
     newPlayers[currentPlayerIndex].score -= ballNumber;
     setPlayers(checkForResurrection(newPlayers));
@@ -619,7 +805,7 @@ export default function NewGamePlusScorekeeper() {
 
   const scratchBallAndPocket = (ballNumber) => {
     setHistory(h => [...h, saveState()]);
-    logShot(players[currentPlayerIndex].name, 'scratch_pocket', ballNumber);
+    logShot(players[currentPlayerIndex].name, 'scratch_pocket', ballNumber, null, -(ballNumber + 3));
     const newPlayers = [...players];
     newPlayers[currentPlayerIndex].score -= (ballNumber + 3);
     setPlayers(checkForResurrection(newPlayers));
@@ -631,7 +817,7 @@ export default function NewGamePlusScorekeeper() {
     setHistory(h => [...h, saveState()]);
     const newPlayers = [...players];
     gamblingPlayers.forEach(i => {
-      logShot(players[i].name, won ? 'gamble_win' : 'gamble_loss', targetBall);
+      logShot(players[i].name, won ? 'gamble_win' : 'gamble_loss', targetBall, null, won ? targetBall : -targetBall);
       newPlayers[i].score += won ? targetBall : -targetBall;
     });
     setPlayers(checkForResurrection(newPlayers));
@@ -642,22 +828,34 @@ export default function NewGamePlusScorekeeper() {
     setHistory(h => [...h, saveState()]);
     const newPlayers = [...players];
     if (outcome === 'made') {
-      gamblingPlayers.forEach(i => { newPlayers[i].score -= targetBall; });
-      newPlayers[currentPlayerIndex].score += targetBall * gamblingPlayers.length;
+      gamblingPlayers.forEach(i => {
+        logShot(players[i].name, 'abraham_clinkin_made', targetBall, null, -targetBall);
+        newPlayers[i].score -= targetBall;
+      });
+      const shooterGain = targetBall * gamblingPlayers.length;
+      logShot(players[currentPlayerIndex].name, 'abraham_clinkin_made', targetBall, null, shooterGain);
+      newPlayers[currentPlayerIndex].score += shooterGain;
     } else if (outcome === 'noScratch') {
-      gamblingPlayers.forEach(i => { newPlayers[i].score -= targetBall; });
+      gamblingPlayers.forEach(i => {
+        logShot(players[i].name, 'abraham_clinkin_noScratch', targetBall, null, -targetBall);
+        newPlayers[i].score -= targetBall;
+      });
+      logShot(players[currentPlayerIndex].name, 'abraham_clinkin_noScratch', targetBall, null, targetBall);
       newPlayers[currentPlayerIndex].score += targetBall;
     } else {
-      gamblingPlayers.forEach(i => { newPlayers[i].score += targetBall; });
+      gamblingPlayers.forEach(i => {
+        logShot(players[i].name, 'abraham_clinkin_scratch', targetBall, null, targetBall);
+        newPlayers[i].score += targetBall;
+      });
+      logShot(players[currentPlayerIndex].name, 'abraham_clinkin_scratch', targetBall, null, 0);
     }
-    logShot(players[currentPlayerIndex].name, `abraham_clinkin_${outcome}`, targetBall);
     setPlayers(checkForResurrection(newPlayers));
     setGamblingPlayers([]);
   };
 
   const addParlayPoints = (pts) => {
     setHistory(h => [...h, saveState()]);
-    logShot(players[currentPlayerIndex].name, 'parlay_add', pts);
+    logShot(players[currentPlayerIndex].name, 'parlay_add', pts, null, pts);
     const newPlayers = [...players];
     newPlayers[currentPlayerIndex].score += pts;
     setPlayers(newPlayers);
@@ -665,7 +863,7 @@ export default function NewGamePlusScorekeeper() {
 
   const removeParlayPoints = (pts) => {
     setHistory(h => [...h, saveState()]);
-    logShot(players[currentPlayerIndex].name, 'parlay_remove', pts);
+    logShot(players[currentPlayerIndex].name, 'parlay_remove', pts, null, -pts);
     const newPlayers = [...players];
     newPlayers[currentPlayerIndex].score -= pts;
     setPlayers(newPlayers);
@@ -674,7 +872,11 @@ export default function NewGamePlusScorekeeper() {
   const doSingleTap = (snapshot) => {
     const newPlayers = [...snapshot];
     const poisonLevel = newPlayers[currentPlayerIndex].poisonLevel || 0;
-    if (poisonLevel > 0) newPlayers[currentPlayerIndex].score -= poisonLevel * 5;
+    if (poisonLevel > 0) {
+      const poisonDelta = -(poisonLevel * 5);
+      newPlayers[currentPlayerIndex].score += poisonDelta;
+      logShot(newPlayers[currentPlayerIndex].name, 'poison_tick', poisonLevel, null, poisonDelta);
+    }
     const checked = checkForResurrection(newPlayers);
     setPlayers(checked);
     let next = (currentPlayerIndex + 1) % numPlayers;
@@ -707,7 +909,12 @@ export default function NewGamePlusScorekeeper() {
   const tripleTap = () => {
     setHistory(h => [...h, saveState()]);
     const newPlayers = [...players];
+    const oldScore = newPlayers[currentPlayerIndex].score;
     newPlayers[currentPlayerIndex].score *= -1;
+    const delta = newPlayers[currentPlayerIndex].score - oldScore;
+    if (delta !== 0) {
+      logShot(newPlayers[currentPlayerIndex].name, 'triple_tap', null, null, delta);
+    }
     setPlayers(checkForResurrection(newPlayers));
   };
 
