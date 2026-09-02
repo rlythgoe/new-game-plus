@@ -26,17 +26,45 @@ const supabase = {
     select: async (columns = "*", opts = {}) => {
       let url = `${SUPABASE_URL}/rest/v1/${table}?select=${columns}`;
       if (opts.order) url += `&order=${opts.order}`;
-      if (opts.limit) url += `&limit=${opts.limit}`;
       if (opts.filter) url += `&${opts.filter}`;
-      const res = await fetch(url, {
-        headers: {
-          "apikey": SUPABASE_ANON_KEY,
-          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-        },
-      });
-      const data = await res.json();
-      return { data: res.ok ? data : [], error: res.ok ? null : data };
+      const authHeaders = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+      };
+
+      // Caller wants a specific, deliberately-capped number of rows (e.g. "500
+      // most recent games") — do a single plain request, no pagination needed.
+      if (opts.limit) {
+        const res = await fetch(`${url}&limit=${opts.limit}`, { headers: authHeaders });
+        const data = await res.json();
+        return { data: res.ok ? data : [], error: res.ok ? null : data };
+      }
+
+      // Otherwise fetch ALL rows. PostgREST (Supabase's REST API) caps every
+      // response at its configured max-rows (commonly 1000) regardless of how
+      // many rows actually match — a single request silently truncates once a
+      // table grows past that, which is exactly what was undercounting the
+      // Per-Player stats. Page through with the Range header until a page
+      // comes back shorter than a full page, then stitch everything together.
+      const PAGE_SIZE = 1000;
+      let allRows = [];
+      let from = 0;
+      while (true) {
+        const res = await fetch(url, {
+          headers: { ...authHeaders, Range: `${from}-${from + PAGE_SIZE - 1}` },
+        });
+        if (!res.ok) {
+          const errData = await res.json();
+          return { data: allRows, error: errData };
+        }
+        const page = await res.json();
+        allRows = allRows.concat(page);
+        if (page.length < PAGE_SIZE) break; // last page reached
+        from += PAGE_SIZE;
+      }
+      return { data: allRows, error: null };
     },
+
     increment: async (id) => {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/increment_counter`, {
         method: "POST",
