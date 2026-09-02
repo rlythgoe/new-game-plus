@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  BarChart, Bar, Cell,
 } from "recharts";
 
 // ─── SUPABASE CONFIG ──────────────────────────────────────────────────────────
@@ -245,6 +246,27 @@ const GameProgressTooltip = ({ active, payload, label }) => {
   );
 };
 
+// Tooltip for the season-long "wins over time" chart: shows the date, who won
+// that specific game, and every player's cumulative win count at that point.
+const WinsTimeTooltip = ({ active, payload, label }) => {
+  if (!active || !payload || payload.length === 0) return null;
+  const point = payload[0].payload;
+  return (
+    <div className="bg-purple-950 border border-purple-600 rounded-lg p-2 text-xs shadow-lg">
+      <div className="font-bold mb-1">
+        Game #{label}
+        {point.date ? ` — ${new Date(point.date).toLocaleDateString()}` : ""}
+        {point.winner ? ` — 🏆 ${point.winner}` : ""}
+      </div>
+      {payload.map((p) => (
+        <div key={p.dataKey} style={{ color: p.color }} className="font-semibold">
+          {p.dataKey}: {p.value}
+        </div>
+      ))}
+    </div>
+  );
+};
+
 const GameProgressChart = ({ playerNames, shots, loading, error }) => {
   const series = useMemo(
     () => buildCumulativeSeries(shots || [], playerNames),
@@ -374,6 +396,9 @@ const StatsView = ({ onBack }) => {
           totalBallsPocketed: 0, totalRicochets: 0,
           totalScratches: 0, totalDeathRolls: 0, totalDeaths: 0,
           placements: [],
+          gambleWins: 0, gambleLosses: 0, gambleNet: 0,
+          parlayNet: 0,
+          abrahamShooterCount: 0, abrahamGamblerCount: 0, abrahamNet: 0,
         };
       }
       const p = playerMap[r.player_name];
@@ -392,6 +417,27 @@ const StatsView = ({ onBack }) => {
       if (s.shot_type === "scratch" || s.shot_type === "scratch_pocket") p.totalScratches++;
       if (s.shot_type === "death_roll") p.totalDeathRolls++;
       if (s.shot_type === "death_roll" && s.result === "ghost") p.totalDeaths++;
+
+      // Gambling / Parlay / Abraham Clinkin' — who's actually earning or bleeding
+      // points off the side bets, separate from raw ball-pocketing score.
+      if (s.shot_type === "gamble_win") { p.gambleWins++; p.gambleNet += shotPointDelta(s); }
+      if (s.shot_type === "gamble_loss") { p.gambleLosses++; p.gambleNet += shotPointDelta(s); }
+      if (s.shot_type === "parlay_add" || s.shot_type === "parlay_remove") {
+        p.parlayNet += shotPointDelta(s);
+      }
+      if (s.shot_type.startsWith("abraham_clinkin_")) {
+        p.abrahamNet += shotPointDelta(s);
+        // The shooter is whoever the *other* Abraham rows in this same
+        // resolution point-lose for made/noScratch or point-gain for scratch;
+        // simplest reliable signal is a positive delta on made/noScratch (shooter
+        // gains) vs a negative delta on made/noScratch (gambler loses).
+        if (s.shot_type === "abraham_clinkin_scratch") {
+          if (shotPointDelta(s) > 0) p.abrahamGamblerCount++;
+        } else {
+          if (shotPointDelta(s) > 0) p.abrahamShooterCount++;
+          else if (shotPointDelta(s) < 0) p.abrahamGamblerCount++;
+        }
+      }
     });
 
     return Object.values(playerMap).map(p => ({
@@ -401,10 +447,40 @@ const StatsView = ({ onBack }) => {
       avgPlacement: p.placements.length > 0
         ? (p.placements.reduce((a, b) => a + b, 0) / p.placements.length).toFixed(1)
         : null,
+      netGamblingPoints: p.gambleNet + p.parlayNet + p.abrahamNet,
+      gambleWinRate: (p.gambleWins + p.gambleLosses) > 0
+        ? ((p.gambleWins / (p.gambleWins + p.gambleLosses)) * 100).toFixed(0)
+        : null,
     })).sort((a, b) => b.wins - a.wins || b.winRate - a.winRate);
   }, [allResults, allShots, filteredGameIds]);
 
-  const tabs = ["leaderboard", "per-player", "recent games"];
+  const gamblingStats = useMemo(
+    () => [...stats].sort((a, b) => b.netGamblingPoints - a.netGamblingPoints),
+    [stats]
+  );
+
+  // Chronological cumulative win-count per player, for the "story of the season"
+  // line chart at the top of the Leaderboard tab.
+  const winsTimeSeries = useMemo(() => {
+    const sortedGames = [...games].sort((a, b) => new Date(a.played_at) - new Date(b.played_at));
+    const playerNames = stats.map(p => p.name);
+    const running = {};
+    playerNames.forEach(name => { running[name] = 0; });
+
+    const rows = [{ gameNum: 0, date: null, winner: null, ...running }];
+    sortedGames.forEach((g, idx) => {
+      if (g.winner_name in running) running[g.winner_name] += 1;
+      rows.push({
+        gameNum: idx + 1,
+        date: g.played_at,
+        winner: g.winner_name,
+        ...running,
+      });
+    });
+    return { rows, playerNames };
+  }, [games, stats]);
+
+  const tabs = ["leaderboard", "per-player", "gambling", "recent games"];
   const isCurrentSeason = selectedSeason === getCurrentQuarterKey();
 
   // Detect a Recent Game click: toggle it open/closed, and pull that game's
@@ -487,6 +563,37 @@ const StatsView = ({ onBack }) => {
             {activeTab === "leaderboard" && (
               <div className="space-y-3">
                 {stats.length === 0 && <div className="text-center py-12 text-purple-400">No games in {selectedSeason} yet.</div>}
+
+                {stats.length > 0 && winsTimeSeries.rows.length > 1 && (
+                  <div className="bg-purple-950 rounded-lg p-3 mb-1">
+                    <div className="text-sm font-bold text-purple-200 mb-1">Wins Over Time</div>
+                    <div style={{ width: "100%", height: 240 }}>
+                      <ResponsiveContainer>
+                        <LineChart data={winsTimeSeries.rows} margin={{ top: 6, right: 12, left: -18, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#4c1d95" />
+                          <XAxis
+                            dataKey="gameNum" stroke="#c4b5fd" tick={{ fontSize: 11 }}
+                            label={{ value: "Game #", position: "insideBottom", offset: -2, fill: "#c4b5fd", fontSize: 11 }}
+                          />
+                          <YAxis stroke="#c4b5fd" tick={{ fontSize: 11 }} allowDecimals={false} />
+                          <Tooltip content={<WinsTimeTooltip />} />
+                          <Legend wrapperStyle={{ fontSize: 11 }} />
+                          {winsTimeSeries.playerNames.map((name, i) => (
+                            <Line
+                              key={name} type="monotone" dataKey={name}
+                              stroke={colorForPlayerIndex(i)} strokeWidth={2}
+                              dot={false} activeDot={{ r: 4 }}
+                            />
+                          ))}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="text-xs text-purple-400 mt-1">
+                      Cumulative wins after each game in {selectedSeason}, in the order they were played.
+                    </div>
+                  </div>
+                )}
+
                 {stats.map((p, i) => (
                   <div key={p.name} className={`p-4 rounded-xl ${i === 0 ? 'bg-yellow-700 ring-2 ring-yellow-400' : 'bg-purple-800'}`}>
                     <div className="flex items-center gap-3 mb-3">
@@ -532,6 +639,70 @@ const StatsView = ({ onBack }) => {
                       <StatCard label="Ricochets" value={p.totalRicochets} color="blue" />
                       <StatCard label="Scratches" value={p.totalScratches} color="red" />
                       <StatCard label="Deaths" value={p.totalDeaths} sub={`${p.totalDeathRolls} rolls`} color="red" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {activeTab === "gambling" && (
+              <div className="space-y-4">
+                {gamblingStats.length === 0 && <div className="text-center py-12 text-purple-400">No games in {selectedSeason} yet.</div>}
+                {gamblingStats.length > 0 && (
+                  <div className="bg-purple-950 rounded-lg p-3">
+                    <div style={{ width: "100%", height: Math.max(180, gamblingStats.length * 44) }}>
+                      <ResponsiveContainer>
+                        <BarChart
+                          data={gamblingStats}
+                          layout="vertical"
+                          margin={{ top: 4, right: 24, left: 8, bottom: 4 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" stroke="#4c1d95" />
+                          <XAxis type="number" stroke="#c4b5fd" tick={{ fontSize: 11 }} />
+                          <YAxis type="category" dataKey="name" stroke="#c4b5fd" tick={{ fontSize: 12 }} width={80} />
+                          <Tooltip
+                            contentStyle={{ background: "#3b0764", border: "1px solid #7c3aed", fontSize: 12 }}
+                            labelStyle={{ color: "#e9d5ff" }}
+                          />
+                          <Bar dataKey="netGamblingPoints" name="Net gambling pts" radius={[0, 4, 4, 0]}>
+                            {gamblingStats.map((p) => (
+                              <Cell key={p.name} fill={p.netGamblingPoints >= 0 ? "#4ade80" : "#f87171"} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="text-xs text-purple-400 mt-1">
+                      Net points from gambles, parlays, and Abraham Clinkin' combined — green means they're up overall, red means the side bets are costing them.
+                    </div>
+                  </div>
+                )}
+                {gamblingStats.map((p) => (
+                  <div key={p.name} className="bg-purple-800 rounded-xl p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="text-xl font-black">{p.name}</div>
+                      <div className={`text-2xl font-black ${p.netGamblingPoints > 0 ? "text-green-400" : p.netGamblingPoints < 0 ? "text-red-400" : "text-purple-300"}`}>
+                        {p.netGamblingPoints > 0 ? "+" : ""}{p.netGamblingPoints} pts
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 mb-2">
+                      <StatCard
+                        label="Gambles"
+                        value={`${p.gambleWins}-${p.gambleLosses}`}
+                        sub={p.gambleWinRate !== null ? `${p.gambleWinRate}% win` : "—"}
+                        color="blue"
+                      />
+                      <StatCard
+                        label="Parlay Net"
+                        value={`${p.parlayNet > 0 ? "+" : ""}${p.parlayNet}`}
+                        color={p.parlayNet >= 0 ? "green" : "red"}
+                      />
+                      <StatCard
+                        label="Abraham Net"
+                        value={`${p.abrahamNet > 0 ? "+" : ""}${p.abrahamNet}`}
+                        sub={`${p.abrahamShooterCount} shot / ${p.abrahamGamblerCount} bet`}
+                        color={p.abrahamNet >= 0 ? "green" : "red"}
+                      />
                     </div>
                   </div>
                 ))}
