@@ -397,8 +397,16 @@ const StatsView = ({ onBack }) => {
           totalScratches: 0, totalDeathRolls: 0, totalDeaths: 0,
           placements: [],
           gambleWins: 0, gambleLosses: 0, gambleNet: 0,
-          parlayNet: 0,
+          // Parlays: total attempts, how many hit (parlay_add) vs missed (parlay_remove),
+          // and a breakdown by the point value of the parlay (5 / 8 / 11, etc).
+          parlayNet: 0, parlayAttempts: 0, parlayWins: 0, parlayLosses: 0,
+          parlayByType: {},
+          // Abraham Clinkin': tracked separately for the two roles you can play —
+          // shooter (attempting the shot) and gambler (betting on someone else's shot).
           abrahamShooterCount: 0, abrahamGamblerCount: 0, abrahamNet: 0,
+          abrahamShooterAttempts: 0, abrahamShooterMade: 0,
+          abrahamShooterNoScratch: 0, abrahamShooterScratched: 0,
+          abrahamGamblerAttempts: 0, abrahamGamblerWon: 0, abrahamGamblerLost: 0,
         };
       }
       const p = playerMap[r.player_name];
@@ -418,24 +426,36 @@ const StatsView = ({ onBack }) => {
       if (s.shot_type === "death_roll") p.totalDeathRolls++;
       if (s.shot_type === "death_roll" && s.result === "ghost") p.totalDeaths++;
 
-      // Gambling / Parlay / Abraham Clinkin' — who's actually earning or bleeding
-      // points off the side bets, separate from raw ball-pocketing score.
+      // Gambling — plain coin-flip style bets on a shot.
       if (s.shot_type === "gamble_win") { p.gambleWins++; p.gambleNet += shotPointDelta(s); }
       if (s.shot_type === "gamble_loss") { p.gambleLosses++; p.gambleNet += shotPointDelta(s); }
+
+      // Parlays — each add/remove event is one parlay attempt at a given point
+      // value (ball_number holds the parlay's point size, e.g. 5/8/11).
       if (s.shot_type === "parlay_add" || s.shot_type === "parlay_remove") {
         p.parlayNet += shotPointDelta(s);
+        p.parlayAttempts++;
+        const type = s.ball_number ?? "?";
+        if (!p.parlayByType[type]) p.parlayByType[type] = { wins: 0, losses: 0 };
+        if (s.shot_type === "parlay_add") { p.parlayWins++; p.parlayByType[type].wins++; }
+        else { p.parlayLosses++; p.parlayByType[type].losses++; }
       }
+
+      // Abraham Clinkin' — one row per affected player, tagged with the outcome.
+      // Role (shooter vs gambler) is inferred from the sign of that player's own
+      // point_delta on the row, since shooter and gamblers move opposite ways.
       if (s.shot_type.startsWith("abraham_clinkin_")) {
         p.abrahamNet += shotPointDelta(s);
-        // The shooter is whoever the *other* Abraham rows in this same
-        // resolution point-lose for made/noScratch or point-gain for scratch;
-        // simplest reliable signal is a positive delta on made/noScratch (shooter
-        // gains) vs a negative delta on made/noScratch (gambler loses).
-        if (s.shot_type === "abraham_clinkin_scratch") {
-          if (shotPointDelta(s) > 0) p.abrahamGamblerCount++;
-        } else {
-          if (shotPointDelta(s) > 0) p.abrahamShooterCount++;
-          else if (shotPointDelta(s) < 0) p.abrahamGamblerCount++;
+        const delta = shotPointDelta(s);
+        if (s.shot_type === "abraham_clinkin_made") {
+          if (delta > 0) { p.abrahamShooterCount++; p.abrahamShooterAttempts++; p.abrahamShooterMade++; }
+          else if (delta < 0) { p.abrahamGamblerCount++; p.abrahamGamblerAttempts++; p.abrahamGamblerLost++; }
+        } else if (s.shot_type === "abraham_clinkin_noScratch") {
+          if (delta > 0) { p.abrahamShooterCount++; p.abrahamShooterAttempts++; p.abrahamShooterNoScratch++; }
+          else if (delta < 0) { p.abrahamGamblerCount++; p.abrahamGamblerAttempts++; p.abrahamGamblerLost++; }
+        } else if (s.shot_type === "abraham_clinkin_scratch") {
+          if (delta > 0) { p.abrahamGamblerCount++; p.abrahamGamblerAttempts++; p.abrahamGamblerWon++; }
+          else { p.abrahamShooterAttempts++; p.abrahamShooterScratched++; } // shooter's own row, delta === 0
         }
       }
     });
@@ -458,6 +478,8 @@ const StatsView = ({ onBack }) => {
     () => [...stats].sort((a, b) => b.netGamblingPoints - a.netGamblingPoints),
     [stats]
   );
+
+  const [expandedGamblingPlayer, setExpandedGamblingPlayer] = useState(null);
 
   // Chronological cumulative win-count per player, for the "story of the season"
   // line chart at the top of the Leaderboard tab.
@@ -679,31 +701,100 @@ const StatsView = ({ onBack }) => {
                 )}
                 {gamblingStats.map((p) => (
                   <div key={p.name} className="bg-purple-800 rounded-xl p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="text-xl font-black">{p.name}</div>
-                      <div className={`text-2xl font-black ${p.netGamblingPoints > 0 ? "text-green-400" : p.netGamblingPoints < 0 ? "text-red-400" : "text-purple-300"}`}>
-                        {p.netGamblingPoints > 0 ? "+" : ""}{p.netGamblingPoints} pts
+                    <button
+                      onClick={() => setExpandedGamblingPlayer(expandedGamblingPlayer === p.name ? null : p.name)}
+                      className="w-full text-left"
+                      aria-expanded={expandedGamblingPlayer === p.name}
+                    >
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="text-xl font-black flex items-center gap-1">
+                          <span className="text-purple-400 text-xs">{expandedGamblingPlayer === p.name ? "▾" : "▸"}</span>
+                          {p.name}
+                        </div>
+                        <div className={`text-2xl font-black ${p.netGamblingPoints > 0 ? "text-green-400" : p.netGamblingPoints < 0 ? "text-red-400" : "text-purple-300"}`}>
+                          {p.netGamblingPoints > 0 ? "+" : ""}{p.netGamblingPoints} pts
+                        </div>
                       </div>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2 mb-2">
-                      <StatCard
-                        label="Gambles"
-                        value={`${p.gambleWins}-${p.gambleLosses}`}
-                        sub={p.gambleWinRate !== null ? `${p.gambleWinRate}% win` : "—"}
-                        color="blue"
-                      />
-                      <StatCard
-                        label="Parlay Net"
-                        value={`${p.parlayNet > 0 ? "+" : ""}${p.parlayNet}`}
-                        color={p.parlayNet >= 0 ? "green" : "red"}
-                      />
-                      <StatCard
-                        label="Abraham Net"
-                        value={`${p.abrahamNet > 0 ? "+" : ""}${p.abrahamNet}`}
-                        sub={`${p.abrahamShooterCount} shot / ${p.abrahamGamblerCount} bet`}
-                        color={p.abrahamNet >= 0 ? "green" : "red"}
-                      />
-                    </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <StatCard
+                          label="Gambles"
+                          value={`${p.gambleWins}-${p.gambleLosses}`}
+                          sub={p.gambleWinRate !== null ? `${p.gambleWinRate}% win` : "—"}
+                          color="blue"
+                        />
+                        <StatCard
+                          label="Parlay Net"
+                          value={`${p.parlayNet > 0 ? "+" : ""}${p.parlayNet}`}
+                          sub={`${p.parlayAttempts} attempt${p.parlayAttempts !== 1 ? "s" : ""}`}
+                          color={p.parlayNet >= 0 ? "green" : "red"}
+                        />
+                        <StatCard
+                          label="Abraham Net"
+                          value={`${p.abrahamNet > 0 ? "+" : ""}${p.abrahamNet}`}
+                          sub={`${p.abrahamShooterCount} shot / ${p.abrahamGamblerCount} bet`}
+                          color={p.abrahamNet >= 0 ? "green" : "red"}
+                        />
+                      </div>
+                    </button>
+
+                    {expandedGamblingPlayer === p.name && (
+                      <div className="mt-4 pt-4 border-t border-purple-700 space-y-4">
+                        {/* Parlay breakdown */}
+                        <div>
+                          <div className="text-sm font-bold text-purple-200 mb-2">🎯 Parlay Breakdown</div>
+                          <div className="grid grid-cols-3 gap-2 mb-2">
+                            <StatCard label="Attempts" value={p.parlayAttempts} color="purple" />
+                            <StatCard label="Hit" value={p.parlayWins} color="green" />
+                            <StatCard label="Missed" value={p.parlayLosses} color="red" />
+                          </div>
+                          {Object.keys(p.parlayByType).length > 0 ? (
+                            <div className="space-y-1">
+                              {Object.entries(p.parlayByType)
+                                .sort((a, b) => Number(a[0]) - Number(b[0]))
+                                .map(([type, rec]) => (
+                                  <div key={type} className="flex items-center justify-between bg-purple-900 rounded-lg px-3 py-2 text-sm">
+                                    <span className="font-semibold">{type}-pt Parlay</span>
+                                    <span>
+                                      <span className="text-green-400 font-bold">{rec.wins}W</span>
+                                      {" – "}
+                                      <span className="text-red-400 font-bold">{rec.losses}L</span>
+                                    </span>
+                                  </div>
+                                ))}
+                            </div>
+                          ) : (
+                            <div className="text-xs text-purple-400">No parlays attempted.</div>
+                          )}
+                        </div>
+
+                        {/* Abraham Clinkin' breakdown */}
+                        <div>
+                          <div className="text-sm font-bold text-purple-200 mb-2">😬 Abraham Clinkin' Breakdown</div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="bg-purple-900 rounded-lg p-3">
+                              <div className="text-xs uppercase tracking-wide text-purple-300 mb-2">As Shooter</div>
+                              <div className="text-sm space-y-1">
+                                <div className="flex justify-between"><span>Attempts</span><span className="font-bold">{p.abrahamShooterAttempts}</span></div>
+                                <div className="flex justify-between"><span className="text-yellow-300">Made it</span><span className="font-bold text-yellow-300">{p.abrahamShooterMade}</span></div>
+                                <div className="flex justify-between"><span className="text-orange-300">No-Scratch</span><span className="font-bold text-orange-300">{p.abrahamShooterNoScratch}</span></div>
+                                <div className="flex justify-between"><span className="text-red-400">Scratched</span><span className="font-bold text-red-400">{p.abrahamShooterScratched}</span></div>
+                              </div>
+                            </div>
+                            <div className="bg-purple-900 rounded-lg p-3">
+                              <div className="text-xs uppercase tracking-wide text-purple-300 mb-2">As Gambler</div>
+                              <div className="text-sm space-y-1">
+                                <div className="flex justify-between"><span>Bets</span><span className="font-bold">{p.abrahamGamblerAttempts}</span></div>
+                                <div className="flex justify-between"><span className="text-green-400">Won</span><span className="font-bold text-green-400">{p.abrahamGamblerWon}</span></div>
+                                <div className="flex justify-between"><span className="text-red-400">Lost</span><span className="font-bold text-red-400">{p.abrahamGamblerLost}</span></div>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="text-xs text-purple-400 mt-2">
+                            Made the ball on a Clinkin' {p.abrahamShooterMade} time{p.abrahamShooterMade !== 1 ? "s" : ""}.
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
