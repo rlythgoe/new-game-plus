@@ -110,7 +110,7 @@ const ScratchBallSelector = ({ onSelectBall, label }) => {
 
 const StatCard = ({ label, value, sub, color = "purple" }) => {
   const colors = {
-    purple: "bg-purple-800", green: "bg-green-800",
+    purple: "bg-[#282a3b]", green: "bg-green-800",
     blue: "bg-blue-800", yellow: "bg-yellow-700",
     red: "bg-red-800", orange: "bg-orange-800",
   };
@@ -149,10 +149,13 @@ const quarterEnd = (key) => {
 
 // ─── GAME PROGRESS CHART (per-player cumulative points for one game) ──────────
 
-// Consistent color per player, assigned by seat order within the game.
+// Consistent color per player, assigned by seat order within the game. Pulled
+// from the Vivint brand palette (Visionary Green, Confident Orange, Imaginative
+// Pink, Visionary Green Alt, Gray 1) plus lighter in-family tints for extra
+// players, so multi-line charts stay distinguishable without leaving the palette.
 const PLAYER_LINE_COLORS = [
-  "#facc15", "#4ade80", "#38bdf8", "#f472b6",
-  "#fb923c", "#a78bfa", "#f87171", "#2dd4bf",
+  "#05e5af", "#ff8736", "#ff66cc", "#00a073",
+  "#cccccc", "#ffb27a", "#ffa3e0", "#6ff0d2",
 ];
 const colorForPlayerIndex = (i) => PLAYER_LINE_COLORS[i % PLAYER_LINE_COLORS.length];
 
@@ -199,6 +202,7 @@ const shotDescription = (shot) => {
     case "death_reset": return "score reset (Death Roll / resurrection)";
     case "poison_tick": return `poison tick (level ${n})`;
     case "triple_tap": return "Triple Tap (score flipped)";
+    case "manual_adjustment": return `manual score adjustment (${shot.point_delta > 0 ? "+" : ""}${shot.point_delta})`;
     case "abraham_clinkin_made": return `Abraham Clinkin' — made it`;
     case "abraham_clinkin_noScratch": return `Abraham Clinkin' — no scratch`;
     case "abraham_clinkin_scratch": return `Abraham Clinkin' — scratched`;
@@ -233,7 +237,7 @@ const GameProgressTooltip = ({ active, payload, label }) => {
   if (!active || !payload || payload.length === 0) return null;
   const point = payload[0].payload;
   return (
-    <div className="bg-purple-950 border border-purple-600 rounded-lg p-2 text-xs shadow-lg">
+    <div className="bg-[#14151d] border border-[#4b4e63] rounded-lg p-2 text-xs shadow-lg">
       <div className="font-bold mb-1">
         Shot #{label}{point.who && point.who !== "Start" ? ` — ${point.who} ${point.detail}` : ""}
       </div>
@@ -252,7 +256,7 @@ const WinsTimeTooltip = ({ active, payload, label }) => {
   if (!active || !payload || payload.length === 0) return null;
   const point = payload[0].payload;
   return (
-    <div className="bg-purple-950 border border-purple-600 rounded-lg p-2 text-xs shadow-lg">
+    <div className="bg-[#14151d] border border-[#4b4e63] rounded-lg p-2 text-xs shadow-lg">
       <div className="font-bold mb-1">
         Game #{label}
         {point.date ? ` — ${new Date(point.date).toLocaleDateString()}` : ""}
@@ -281,26 +285,26 @@ const GameProgressChart = ({ playerNames, shots, loading, error }) => {
   );
 
   if (loading) {
-    return <div className="text-center py-8 text-purple-300 animate-pulse text-sm">Loading shot-by-shot data...</div>;
+    return <div className="text-center py-8 text-[#c9c6be] animate-pulse text-sm">Loading shot-by-shot data...</div>;
   }
   if (error) {
     return <div className="text-center py-8 text-red-400 text-sm">⚠️ Could not load shots: {error}</div>;
   }
   if (!shots || shots.length === 0) {
-    return <div className="text-center py-8 text-purple-400 text-sm">No shot-by-shot data recorded for this game.</div>;
+    return <div className="text-center py-8 text-[#4fd8ac] text-sm">No shot-by-shot data recorded for this game.</div>;
   }
 
   return (
-    <div className="bg-purple-950 rounded-lg p-3 mt-2">
+    <div className="bg-[#14151d] rounded-lg p-3 mt-2">
       <div style={{ width: "100%", height: 260 }}>
         <ResponsiveContainer>
           <LineChart data={series} margin={{ top: 10, right: 12, left: -18, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#4c1d95" />
+            <CartesianGrid strokeDasharray="3 3" stroke="#363849" />
             <XAxis
-              dataKey="shot" stroke="#c4b5fd" tick={{ fontSize: 11 }}
-              label={{ value: "Shot #", position: "insideBottom", offset: -2, fill: "#c4b5fd", fontSize: 11 }}
+              dataKey="shot" stroke="#c9c6be" tick={{ fontSize: 11 }}
+              label={{ value: "Shot #", position: "insideBottom", offset: -2, fill: "#c9c6be", fontSize: 11 }}
             />
-            <YAxis stroke="#c4b5fd" tick={{ fontSize: 11 }} />
+            <YAxis stroke="#c9c6be" tick={{ fontSize: 11 }} />
             <Tooltip content={<GameProgressTooltip />} />
             <Legend wrapperStyle={{ fontSize: 12 }} />
             {playerNames.map((name, i) => (
@@ -313,7 +317,7 @@ const GameProgressChart = ({ playerNames, shots, loading, error }) => {
           </LineChart>
         </ResponsiveContainer>
       </div>
-      <div className="text-xs text-purple-400 mt-1">
+      <div className="text-xs text-[#4fd8ac] mt-1">
         {isExact
           ? "Every scoring event — including gambles, poison, Triple Tap, and Death Roll resets — was logged as it happened, so this is an exact replay of the game."
           : "This game was played before shot-by-shot point tracking was added, so a few event types (gambles, poison, Triple Tap, Death Roll resets) are approximated here."}
@@ -532,13 +536,13 @@ const StatsView = ({ onBack }) => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-900 to-blue-900 text-white p-4">
+    <div className="min-h-screen bg-gradient-to-br from-[#1d1f2c] to-[#0e0f16] text-white p-4">
       <div className="max-w-4xl mx-auto">
 
         {/* Header */}
         <div className="flex items-center gap-3 mb-4">
-          <button onClick={onBack} className="bg-purple-700 hover:bg-purple-600 px-3 py-2 rounded-lg text-sm font-bold">← Back</button>
-          <h1 className="text-2xl font-black">📊 Stats</h1>
+          <button onClick={onBack} className="bg-[#363849] hover:bg-[#4b4e63] px-3 py-2 rounded-lg text-sm font-bold">← Back</button>
+          <h1 className="text-2xl font-black text-[#05e5af]">📊 Stats</h1>
         </div>
 
         {/* Season selector */}
@@ -550,19 +554,19 @@ const StatsView = ({ onBack }) => {
                   className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-all ${
                     selectedSeason === s
                       ? s === "All Time" ? 'bg-blue-600 text-white' : 'bg-yellow-500 text-black'
-                      : 'bg-purple-800 text-purple-300 hover:text-white'
+                      : 'bg-[#282a3b] text-[#c9c6be] hover:text-white'
                   }`}>
                   {s === getCurrentQuarterKey() ? `${s} ⚡` : s}
                 </button>
               ))}
             </div>
             {isCurrentSeason && (
-              <div className="text-xs text-purple-400 mt-2">⚡ Current season — stats reset each quarter, all history preserved</div>
+              <div className="text-xs text-[#4fd8ac] mt-2">⚡ Current season — stats reset each quarter, all history preserved</div>
             )}
           </div>
         )}
 
-        {loading && <div className="text-center py-16 text-purple-300 animate-pulse text-xl">Loading stats...</div>}
+        {loading && <div className="text-center py-16 text-[#c9c6be] animate-pulse text-xl">Loading stats...</div>}
         {error && (
           <div className="bg-red-900 border border-red-500 p-4 rounded-lg mb-4">
             <div className="font-bold mb-1">⚠️ Could not connect to database</div>
@@ -573,10 +577,10 @@ const StatsView = ({ onBack }) => {
 
         {!loading && !error && (
           <>
-            <div className="flex gap-2 mb-6 bg-purple-950 p-1 rounded-lg">
+            <div className="flex gap-2 mb-6 bg-[#14151d] p-1 rounded-lg">
               {tabs.map(t => (
                 <button key={t} onClick={() => setActiveTab(t)}
-                  className={`flex-1 py-2 px-3 rounded-md text-sm font-semibold capitalize transition-all ${activeTab === t ? 'bg-purple-600 text-white' : 'text-purple-300 hover:text-white'}`}>
+                  className={`flex-1 py-2 px-3 rounded-md text-sm font-semibold capitalize transition-all ${activeTab === t ? 'bg-[#ff8736] text-[#14151d]' : 'text-[#c9c6be] hover:text-white'}`}>
                   {t}
                 </button>
               ))}
@@ -584,20 +588,20 @@ const StatsView = ({ onBack }) => {
 
             {activeTab === "leaderboard" && (
               <div className="space-y-3">
-                {stats.length === 0 && <div className="text-center py-12 text-purple-400">No games in {selectedSeason} yet.</div>}
+                {stats.length === 0 && <div className="text-center py-12 text-[#4fd8ac]">No games in {selectedSeason} yet.</div>}
 
                 {stats.length > 0 && winsTimeSeries.rows.length > 1 && (
-                  <div className="bg-purple-950 rounded-lg p-3 mb-1">
-                    <div className="text-sm font-bold text-purple-200 mb-1">Wins Over Time</div>
+                  <div className="bg-[#14151d] rounded-lg p-3 mb-1">
+                    <div className="text-sm font-bold text-[#f3efe8] mb-1">Wins Over Time</div>
                     <div style={{ width: "100%", height: 240 }}>
                       <ResponsiveContainer>
                         <LineChart data={winsTimeSeries.rows} margin={{ top: 6, right: 12, left: -18, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#4c1d95" />
+                          <CartesianGrid strokeDasharray="3 3" stroke="#363849" />
                           <XAxis
-                            dataKey="gameNum" stroke="#c4b5fd" tick={{ fontSize: 11 }}
-                            label={{ value: "Game #", position: "insideBottom", offset: -2, fill: "#c4b5fd", fontSize: 11 }}
+                            dataKey="gameNum" stroke="#c9c6be" tick={{ fontSize: 11 }}
+                            label={{ value: "Game #", position: "insideBottom", offset: -2, fill: "#c9c6be", fontSize: 11 }}
                           />
-                          <YAxis stroke="#c4b5fd" tick={{ fontSize: 11 }} allowDecimals={false} />
+                          <YAxis stroke="#c9c6be" tick={{ fontSize: 11 }} allowDecimals={false} />
                           <Tooltip content={<WinsTimeTooltip />} />
                           <Legend wrapperStyle={{ fontSize: 11 }} />
                           {winsTimeSeries.playerNames.map((name, i) => (
@@ -610,14 +614,14 @@ const StatsView = ({ onBack }) => {
                         </LineChart>
                       </ResponsiveContainer>
                     </div>
-                    <div className="text-xs text-purple-400 mt-1">
+                    <div className="text-xs text-[#4fd8ac] mt-1">
                       Cumulative wins after each game in {selectedSeason}, in the order they were played.
                     </div>
                   </div>
                 )}
 
                 {stats.map((p, i) => (
-                  <div key={p.name} className={`p-4 rounded-xl ${i === 0 ? 'bg-yellow-700 ring-2 ring-yellow-400' : 'bg-purple-800'}`}>
+                  <div key={p.name} className={`p-4 rounded-xl ${i === 0 ? 'bg-yellow-700 ring-2 ring-yellow-400' : 'bg-[#282a3b]'}`}>
                     <div className="flex items-center gap-3 mb-3">
                       <div className="text-3xl font-black w-8">{i === 0 ? '🏆' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`}</div>
                       <div>
@@ -642,9 +646,9 @@ const StatsView = ({ onBack }) => {
 
             {activeTab === "per-player" && (
               <div className="space-y-4">
-                {stats.length === 0 && <div className="text-center py-12 text-purple-400">No games in {selectedSeason} yet.</div>}
+                {stats.length === 0 && <div className="text-center py-12 text-[#4fd8ac]">No games in {selectedSeason} yet.</div>}
                 {stats.map((p) => (
-                  <div key={p.name} className="bg-purple-800 rounded-xl p-4">
+                  <div key={p.name} className="bg-[#282a3b] rounded-xl p-4">
                     <div className="text-xl font-black mb-3">{p.name}</div>
                     <div className="grid grid-cols-3 gap-2 mb-2">
                       <StatCard label="Games" value={p.games} color="blue" />
@@ -669,9 +673,9 @@ const StatsView = ({ onBack }) => {
 
             {activeTab === "gambling" && (
               <div className="space-y-4">
-                {gamblingStats.length === 0 && <div className="text-center py-12 text-purple-400">No games in {selectedSeason} yet.</div>}
+                {gamblingStats.length === 0 && <div className="text-center py-12 text-[#4fd8ac]">No games in {selectedSeason} yet.</div>}
                 {gamblingStats.length > 0 && (
-                  <div className="bg-purple-950 rounded-lg p-3">
+                  <div className="bg-[#14151d] rounded-lg p-3">
                     <div style={{ width: "100%", height: Math.max(180, gamblingStats.length * 44) }}>
                       <ResponsiveContainer>
                         <BarChart
@@ -679,28 +683,28 @@ const StatsView = ({ onBack }) => {
                           layout="vertical"
                           margin={{ top: 4, right: 24, left: 8, bottom: 4 }}
                         >
-                          <CartesianGrid strokeDasharray="3 3" stroke="#4c1d95" />
-                          <XAxis type="number" stroke="#c4b5fd" tick={{ fontSize: 11 }} />
-                          <YAxis type="category" dataKey="name" stroke="#c4b5fd" tick={{ fontSize: 12 }} width={80} />
+                          <CartesianGrid strokeDasharray="3 3" stroke="#363849" />
+                          <XAxis type="number" stroke="#c9c6be" tick={{ fontSize: 11 }} />
+                          <YAxis type="category" dataKey="name" stroke="#c9c6be" tick={{ fontSize: 12 }} width={80} />
                           <Tooltip
-                            contentStyle={{ background: "#3b0764", border: "1px solid #7c3aed", fontSize: 12 }}
-                            labelStyle={{ color: "#e9d5ff" }}
+                            contentStyle={{ background: "#1d1f2c", border: "1px solid #4b4e63", fontSize: 12 }}
+                            labelStyle={{ color: "#f3efe8" }}
                           />
                           <Bar dataKey="netGamblingPoints" name="Net gambling pts" radius={[0, 4, 4, 0]}>
                             {gamblingStats.map((p) => (
-                              <Cell key={p.name} fill={p.netGamblingPoints >= 0 ? "#4ade80" : "#f87171"} />
+                              <Cell key={p.name} fill={p.netGamblingPoints >= 0 ? "#05e5af" : "#f87171"} />
                             ))}
                           </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
-                    <div className="text-xs text-purple-400 mt-1">
+                    <div className="text-xs text-[#4fd8ac] mt-1">
                       Net points from gambles, parlays, and Abraham Clinkin' combined — green means they're up overall, red means the side bets are costing them.
                     </div>
                   </div>
                 )}
                 {gamblingStats.map((p) => (
-                  <div key={p.name} className="bg-purple-800 rounded-xl p-4">
+                  <div key={p.name} className="bg-[#282a3b] rounded-xl p-4">
                     <button
                       onClick={() => setExpandedGamblingPlayer(expandedGamblingPlayer === p.name ? null : p.name)}
                       className="w-full text-left"
@@ -708,10 +712,10 @@ const StatsView = ({ onBack }) => {
                     >
                       <div className="flex items-center justify-between mb-3">
                         <div className="text-xl font-black flex items-center gap-1">
-                          <span className="text-purple-400 text-xs">{expandedGamblingPlayer === p.name ? "▾" : "▸"}</span>
+                          <span className="text-[#4fd8ac] text-xs">{expandedGamblingPlayer === p.name ? "▾" : "▸"}</span>
                           {p.name}
                         </div>
-                        <div className={`text-2xl font-black ${p.netGamblingPoints > 0 ? "text-green-400" : p.netGamblingPoints < 0 ? "text-red-400" : "text-purple-300"}`}>
+                        <div className={`text-2xl font-black ${p.netGamblingPoints > 0 ? "text-green-400" : p.netGamblingPoints < 0 ? "text-red-400" : "text-[#c9c6be]"}`}>
                           {p.netGamblingPoints > 0 ? "+" : ""}{p.netGamblingPoints} pts
                         </div>
                       </div>
@@ -738,10 +742,10 @@ const StatsView = ({ onBack }) => {
                     </button>
 
                     {expandedGamblingPlayer === p.name && (
-                      <div className="mt-4 pt-4 border-t border-purple-700 space-y-4">
+                      <div className="mt-4 pt-4 border-t border-[#363849] space-y-4">
                         {/* Parlay breakdown */}
                         <div>
-                          <div className="text-sm font-bold text-purple-200 mb-2">🎯 Parlay Breakdown</div>
+                          <div className="text-sm font-bold text-[#f3efe8] mb-2">🎯 Parlay Breakdown</div>
                           <div className="grid grid-cols-3 gap-2 mb-2">
                             <StatCard label="Attempts" value={p.parlayAttempts} color="purple" />
                             <StatCard label="Hit" value={p.parlayWins} color="green" />
@@ -752,7 +756,7 @@ const StatsView = ({ onBack }) => {
                               {Object.entries(p.parlayByType)
                                 .sort((a, b) => Number(a[0]) - Number(b[0]))
                                 .map(([type, rec]) => (
-                                  <div key={type} className="flex items-center justify-between bg-purple-900 rounded-lg px-3 py-2 text-sm">
+                                  <div key={type} className="flex items-center justify-between bg-[#1d1f2c] rounded-lg px-3 py-2 text-sm">
                                     <span className="font-semibold">{type}-pt Parlay</span>
                                     <span>
                                       <span className="text-green-400 font-bold">{rec.wins}W</span>
@@ -763,16 +767,16 @@ const StatsView = ({ onBack }) => {
                                 ))}
                             </div>
                           ) : (
-                            <div className="text-xs text-purple-400">No parlays attempted.</div>
+                            <div className="text-xs text-[#4fd8ac]">No parlays attempted.</div>
                           )}
                         </div>
 
                         {/* Abraham Clinkin' breakdown */}
                         <div>
-                          <div className="text-sm font-bold text-purple-200 mb-2">😬 Abraham Clinkin' Breakdown</div>
+                          <div className="text-sm font-bold text-[#f3efe8] mb-2">😬 Abraham Clinkin' Breakdown</div>
                           <div className="grid grid-cols-2 gap-2">
-                            <div className="bg-purple-900 rounded-lg p-3">
-                              <div className="text-xs uppercase tracking-wide text-purple-300 mb-2">As Shooter</div>
+                            <div className="bg-[#1d1f2c] rounded-lg p-3">
+                              <div className="text-xs uppercase tracking-wide text-[#c9c6be] mb-2">As Shooter</div>
                               <div className="text-sm space-y-1">
                                 <div className="flex justify-between"><span>Attempts</span><span className="font-bold">{p.abrahamShooterAttempts}</span></div>
                                 <div className="flex justify-between"><span className="text-yellow-300">Made it</span><span className="font-bold text-yellow-300">{p.abrahamShooterMade}</span></div>
@@ -780,8 +784,8 @@ const StatsView = ({ onBack }) => {
                                 <div className="flex justify-between"><span className="text-red-400">Scratched</span><span className="font-bold text-red-400">{p.abrahamShooterScratched}</span></div>
                               </div>
                             </div>
-                            <div className="bg-purple-900 rounded-lg p-3">
-                              <div className="text-xs uppercase tracking-wide text-purple-300 mb-2">As Gambler</div>
+                            <div className="bg-[#1d1f2c] rounded-lg p-3">
+                              <div className="text-xs uppercase tracking-wide text-[#c9c6be] mb-2">As Gambler</div>
                               <div className="text-sm space-y-1">
                                 <div className="flex justify-between"><span>Bets</span><span className="font-bold">{p.abrahamGamblerAttempts}</span></div>
                                 <div className="flex justify-between"><span className="text-green-400">Won</span><span className="font-bold text-green-400">{p.abrahamGamblerWon}</span></div>
@@ -789,7 +793,7 @@ const StatsView = ({ onBack }) => {
                               </div>
                             </div>
                           </div>
-                          <div className="text-xs text-purple-400 mt-2">
+                          <div className="text-xs text-[#4fd8ac] mt-2">
                             Made the ball on a Clinkin' {p.abrahamShooterMade} time{p.abrahamShooterMade !== 1 ? "s" : ""}.
                           </div>
                         </div>
@@ -802,9 +806,9 @@ const StatsView = ({ onBack }) => {
 
             {activeTab === "recent games" && (
               <div className="space-y-3">
-                {games.length === 0 && <div className="text-center py-12 text-purple-400">No games in {selectedSeason} yet.</div>}
+                {games.length === 0 && <div className="text-center py-12 text-[#4fd8ac]">No games in {selectedSeason} yet.</div>}
                 {games.map((g) => (
-                  <div key={g.id} className="bg-purple-800 rounded-xl p-4">
+                  <div key={g.id} className="bg-[#282a3b] rounded-xl p-4">
                     <button
                       onClick={() => toggleGameExpand(g)}
                       className="w-full text-left"
@@ -813,12 +817,12 @@ const StatsView = ({ onBack }) => {
                       <div className="flex justify-between items-start mb-2">
                         <div>
                           <div className="font-bold flex items-center gap-1">
-                            <span className="text-purple-400 text-xs">{expandedGameId === g.id ? "▾" : "▸"}</span>
+                            <span className="text-[#4fd8ac] text-xs">{expandedGameId === g.id ? "▾" : "▸"}</span>
                             {g.player_names?.join(", ")}
                           </div>
-                          <div className="text-xs text-purple-300">{g.player_count} players · Ball {g.final_ball ?? "?"} reached</div>
+                          <div className="text-xs text-[#c9c6be]">{g.player_count} players · Ball {g.final_ball ?? "?"} reached</div>
                         </div>
-                        <div className="text-right text-xs text-purple-400">
+                        <div className="text-right text-xs text-[#4fd8ac]">
                           {g.played_at ? new Date(g.played_at).toLocaleDateString() : ""}
                           {g.ended_early && <div className="text-orange-400 font-semibold">⏱️ Early end</div>}
                         </div>
@@ -851,6 +855,12 @@ const StatsView = ({ onBack }) => {
 // ─── STYLES ───────────────────────────────────────────────────────────────────
 
 const styles = `
+  @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800;900&display=swap');
+
+  /* Vivint brand type: the real Vivint brand font isn't a licensed web font, so
+     Poppins is used as the closest available geometric-sans approximation. */
+  body, #root { font-family: 'Poppins', system-ui, sans-serif; }
+
   @keyframes flipCoin {
     0%   { transform: rotateY(0deg) scale(1); }
     50%  { transform: rotateY(900deg) scale(1.3); }
@@ -982,6 +992,12 @@ export default function NewGamePlusScorekeeper() {
     setPlayers(newPlayers);
   };
 
+  const manualKillPlayer = (index) => {
+    if (!window.confirm(`Kill ${players[index].name}? This applies the same score penalty as a Death Roll.`)) return;
+    setHistory(h => [...h, saveState()]);
+    killPlayer(index);
+  };
+
   const revivePlayer = (index) => {
     const newPlayers = [...players];
     newPlayers[index].isDead = false;
@@ -1026,7 +1042,12 @@ export default function NewGamePlusScorekeeper() {
 
   const updatePlayerScore = (index, newScore) => {
     const newPlayers = [...players];
+    const oldScore = newPlayers[index].score;
     newPlayers[index].score = newScore;
+    const delta = newScore - oldScore;
+    if (delta !== 0) {
+      logShot(newPlayers[index].name, 'manual_adjustment', null, null, delta);
+    }
     setPlayers(checkForResurrection(newPlayers));
     setEditingScore(null);
   };
@@ -1159,14 +1180,22 @@ export default function NewGamePlusScorekeeper() {
     setPlayers(newPlayers);
   };
 
-  const doSingleTap = (snapshot) => {
-    const newPlayers = [...snapshot];
-    const poisonLevel = newPlayers[currentPlayerIndex].poisonLevel || 0;
+  // Applies a player's end-of-turn poison damage (if any) directly to a mutable
+  // players array, logging it so it shows up in the game's shot log / progress
+  // chart. Shared by Single Tap and Double Tap so poison behaves consistently
+  // regardless of whose turn is actually being skipped.
+  const applyPoisonTick = (playersArray, index) => {
+    const poisonLevel = playersArray[index].poisonLevel || 0;
     if (poisonLevel > 0) {
       const poisonDelta = -(poisonLevel * 5);
-      newPlayers[currentPlayerIndex].score += poisonDelta;
-      logShot(newPlayers[currentPlayerIndex].name, 'poison_tick', poisonLevel, null, poisonDelta);
+      playersArray[index].score += poisonDelta;
+      logShot(playersArray[index].name, 'poison_tick', poisonLevel, null, poisonDelta);
     }
+    return playersArray;
+  };
+
+  const doSingleTap = (snapshot) => {
+    const newPlayers = applyPoisonTick([...snapshot], currentPlayerIndex);
     const checked = checkForResurrection(newPlayers);
     setPlayers(checked);
     let next = (currentPlayerIndex + 1) % numPlayers;
@@ -1178,9 +1207,15 @@ export default function NewGamePlusScorekeeper() {
   };
 
   const doDoubleTap = () => {
+    // The skipped player's turn never happens, but poison still ticks for them —
+    // otherwise being poisoned and skipped was a free pass from the damage.
+    const skippedIndex = (currentPlayerIndex + 1) % numPlayers;
+    const newPlayers = applyPoisonTick([...players], skippedIndex);
+    const checked = checkForResurrection(newPlayers);
+    setPlayers(checked);
     let next = (currentPlayerIndex + 2) % numPlayers;
     let safety = 0;
-    while (players[next]?.isDead && next !== currentPlayerIndex && safety < numPlayers) {
+    while (checked[next]?.isDead && next !== currentPlayerIndex && safety < numPlayers) {
       next = (next + 1) % numPlayers; safety++;
     }
     setCurrentPlayerIndex(next);
@@ -1335,24 +1370,24 @@ export default function NewGamePlusScorekeeper() {
   // ── Player selection screen ───────────────────────────────────────────────
   if (!gameStarted) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-purple-900 to-blue-900 text-white p-4 flex items-center justify-center">
-        <div className="max-w-md w-full bg-purple-800 p-8 rounded-lg">
+      <div className="min-h-screen bg-gradient-to-br from-[#1d1f2c] to-[#0e0f16] text-white p-4 flex items-center justify-center">
+        <div className="max-w-md w-full bg-[#282a3b] p-8 rounded-lg">
           <div className="flex justify-between items-center mb-6">
-            <h1 className="text-3xl font-bold">New Game +</h1>
-            <button onClick={() => setShowStats(true)} className="bg-blue-600 hover:bg-blue-500 px-3 py-2 rounded-lg text-sm font-bold">📊 Stats</button>
+            <h1 className="text-3xl font-bold text-[#05e5af]">New Game +</h1>
+            <button onClick={() => setShowStats(true)} className="bg-[#4b4e63] hover:bg-[#363849] px-3 py-2 rounded-lg text-sm font-bold">📊 Stats</button>
           </div>
           <p className="text-center mb-4">Select Players ({selectedPlayers.length} selected)</p>
           <div className="grid grid-cols-2 gap-3 mb-6">
             {availablePlayers.map((playerName) => (
               <button key={playerName} onClick={() => togglePlayerSelection(playerName)}
-                className={`p-4 rounded-lg font-semibold text-lg transition-all ${selectedPlayers.includes(playerName) ? 'bg-green-600 ring-4 ring-green-400' : 'bg-purple-600 hover:bg-purple-700'}`}>
+                className={`p-4 rounded-lg font-semibold text-lg transition-all ${selectedPlayers.includes(playerName) ? 'bg-[#05e5af] text-[#14151d] ring-4 ring-[#6ff0d2]' : 'bg-[#4b4e63] hover:bg-[#363849]'}`}>
                 {playerName}
                 {selectedPlayers.includes(playerName) && <div className="text-sm mt-1">✓ #{selectedPlayers.indexOf(playerName) + 1}</div>}
               </button>
             ))}
           </div>
           <button onClick={startGame} disabled={selectedPlayers.length < 2}
-            className="w-full bg-yellow-500 hover:bg-yellow-600 text-black p-4 rounded-lg font-bold text-xl disabled:opacity-50 disabled:cursor-not-allowed">
+            className="w-full bg-[#ff8736] hover:bg-[#e6752b] text-[#14151d] p-4 rounded-lg font-bold text-xl disabled:opacity-50 disabled:cursor-not-allowed">
             Start Game
           </button>
           {selectedPlayers.length < 2 && <p className="text-center text-sm text-red-300 mt-3">Select at least 2 players</p>}
@@ -1363,7 +1398,7 @@ export default function NewGamePlusScorekeeper() {
 
   // ── In-game screen ────────────────────────────────────────────────────────
   return (
-    <div className={`min-h-screen ${isAbrahamClinkin ? 'bg-gradient-to-br from-red-900 via-orange-900 to-yellow-900 animate-pulse' : 'bg-gradient-to-br from-purple-900 to-blue-900'} text-white p-4`}>
+    <div className={`min-h-screen ${isAbrahamClinkin ? 'bg-gradient-to-br from-red-900 via-orange-900 to-yellow-900 animate-pulse' : 'bg-gradient-to-br from-[#1d1f2c] to-[#0e0f16]'} text-white p-4`}>
       <style>{styles}</style>
       <div className="max-w-4xl mx-auto">
 
@@ -1401,9 +1436,9 @@ export default function NewGamePlusScorekeeper() {
         {/* Coin Flip Modal */}
         {showCoinFlip && (
           <div className="fixed inset-0 bg-black bg-opacity-85 flex items-center justify-center z-50">
-            <div className="bg-gray-900 border-2 border-indigo-500 p-8 rounded-2xl text-center max-w-sm w-full mx-4 shadow-2xl">
-              <div className="text-indigo-300 font-black text-2xl mb-1">🐱 SCHRÖDINGER'S</div>
-              <div className="text-indigo-300 font-black text-2xl mb-5">DOUBLE TAP 🐱</div>
+            <div className="bg-gray-900 border-2 border-[#ff66cc] p-8 rounded-2xl text-center max-w-sm w-full mx-4 shadow-2xl">
+              <div className="text-[#ff66cc] font-black text-2xl mb-1">🐱 SCHRÖDINGER'S</div>
+              <div className="text-[#ff66cc] font-black text-2xl mb-5">DOUBLE TAP 🐱</div>
               <div className="min-h-32 flex flex-col items-center justify-center mb-5">
                 {!coinFlipping && coinResult === null && <div className="text-7xl">🪙</div>}
                 {coinFlipping && <div className="coin-flip-anim text-7xl">🪙</div>}
@@ -1424,7 +1459,7 @@ export default function NewGamePlusScorekeeper() {
                 <div className="bg-gray-800 p-2 rounded"><div className="text-orange-400 font-bold mb-1">TAILS</div><div>Double Tap — skip next player</div></div>
               </div>
               {!coinFlipping && coinResult === null && (
-                <button onClick={flipCoin} className="w-full bg-indigo-600 hover:bg-indigo-500 px-6 py-4 rounded-xl font-black text-lg">🪙 FLIP THE COIN</button>
+                <button onClick={flipCoin} className="w-full bg-[#ff66cc] hover:bg-[#e654b8] text-[#14151d] px-6 py-4 rounded-xl font-black text-lg">🪙 FLIP THE COIN</button>
               )}
               {coinFlipping && <div className="text-gray-400 text-lg font-semibold animate-pulse">Flipping...</div>}
               {coinResult !== null && <div className="text-gray-500 text-sm animate-pulse mt-2">Resolving...</div>}
@@ -1462,7 +1497,7 @@ export default function NewGamePlusScorekeeper() {
         {/* Manage Players Modal */}
         {showManagePlayers && (
           <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
-            <div className="bg-gray-900 border-2 border-purple-500 p-6 rounded-2xl max-w-sm w-full mx-4 shadow-2xl">
+            <div className="bg-gray-900 border-2 border-[#63667d] p-6 rounded-2xl max-w-sm w-full mx-4 shadow-2xl">
               <div className="flex justify-between items-center mb-5">
                 <h2 className="text-xl font-black">👥 Manage Players</h2>
                 <button onClick={() => { setShowManagePlayers(false); setConfirmRemove(null); }}
@@ -1471,13 +1506,13 @@ export default function NewGamePlusScorekeeper() {
 
               {/* Current players */}
               <div className="mb-5">
-                <div className="text-xs text-purple-300 font-semibold mb-2 uppercase tracking-wide">In Game</div>
+                <div className="text-xs text-[#c9c6be] font-semibold mb-2 uppercase tracking-wide">In Game</div>
                 <div className="space-y-2">
                   {players.map((player, index) => (
-                    <div key={player.id} className="flex items-center justify-between bg-purple-800 px-3 py-2 rounded-lg">
+                    <div key={player.id} className="flex items-center justify-between bg-[#282a3b] px-3 py-2 rounded-lg">
                       <div>
                         <span className="font-semibold">{player.name}</span>
-                        <span className="text-purple-300 text-sm ml-2">{player.score} pts</span>
+                        <span className="text-[#c9c6be] text-sm ml-2">{player.score} pts</span>
                         {player.isDead && <span className="text-red-400 text-xs ml-2">💀</span>}
                       </div>
                       {confirmRemove === index ? (
@@ -1497,7 +1532,7 @@ export default function NewGamePlusScorekeeper() {
               {/* Add players */}
               {availablePlayers.filter(name => !players.find(p => p.name === name)).length > 0 && (
                 <div>
-                  <div className="text-xs text-purple-300 font-semibold mb-2 uppercase tracking-wide">
+                  <div className="text-xs text-[#c9c6be] font-semibold mb-2 uppercase tracking-wide">
                     Add Player — starts at {players.length > 0 ? Math.min(...players.map(p => p.score)) : 0} pts
                   </div>
                   <div className="grid grid-cols-2 gap-2">
@@ -1518,10 +1553,10 @@ export default function NewGamePlusScorekeeper() {
 
         {/* Header */}
         <div className="flex justify-between items-center mb-4">
-          <h1 className="text-2xl font-bold">New Game +</h1>
+          <h1 className="text-2xl font-bold text-[#05e5af]">New Game +</h1>
           <div className="flex gap-2 items-center">
-            <button onClick={() => setShowStats(true)} className="p-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-bold">📊</button>
-            {!winner && <button onClick={() => { setShowManagePlayers(true); setConfirmRemove(null); }} className="p-2 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm font-bold">👥</button>}
+            <button onClick={() => setShowStats(true)} className="p-2 bg-[#4b4e63] hover:bg-[#63667d] rounded-lg text-sm font-bold">📊</button>
+            {!winner && <button onClick={() => { setShowManagePlayers(true); setConfirmRemove(null); }} className="p-2 bg-[#4b4e63] hover:bg-[#63667d] rounded-lg text-sm font-bold">👥</button>}
             <button onClick={undo} disabled={history.length === 0} className="p-2 bg-yellow-600 rounded-lg disabled:opacity-50 text-sm font-bold">↩ Undo</button>
             {!winner && <button onClick={() => setShowEndGameConfirm(true)} className="p-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-bold">⏱️ End</button>}
             <button onClick={resetGame} className="p-2 bg-red-600 rounded-lg text-sm font-bold">↺ Reset</button>
@@ -1530,12 +1565,12 @@ export default function NewGamePlusScorekeeper() {
 
         {!winner && currentPlayer && (
           <>
-            <div className="bg-purple-800 p-4 rounded-lg mb-4">
+            <div className="bg-[#282a3b] p-4 rounded-lg mb-4">
               <div className="text-lg font-bold text-center mb-1">{currentPlayer.name}'s Turn</div>
-              {currentPlayer.poisonLevel === 2 && <div className="text-center text-purple-300 text-sm">⚠️⚠️ Double Poisoned! Lose 10 points this turn</div>}
+              {currentPlayer.poisonLevel === 2 && <div className="text-center text-[#c9c6be] text-sm">⚠️⚠️ Double Poisoned! Lose 10 points this turn</div>}
               {currentPlayer.poisonLevel === 1 && <div className="text-center text-red-300 text-sm">⚠️ Poisoned! Lose 5 points this turn</div>}
             </div>
-            <div className="bg-purple-800 p-4 rounded-lg mb-4 text-center">
+            <div className="bg-[#282a3b] p-4 rounded-lg mb-4 text-center">
               <div className="text-2xl font-bold">Target Ball: {targetBall}</div>
             </div>
           </>
@@ -1543,20 +1578,20 @@ export default function NewGamePlusScorekeeper() {
 
         {/* Winner banner */}
         {winner && (
-          <div className="bg-purple-800 p-4 rounded-lg mb-4 text-center py-6">
-            <div className="text-5xl font-black mb-4">GG's Joe!</div>
+          <div className="bg-[#282a3b] p-4 rounded-lg mb-4 text-center py-6">
+            <div className="text-5xl font-black mb-4 text-[#05e5af]">GG's Joe!</div>
             <div className="text-4xl mb-3">🎉 🏆 🎉</div>
             {gameEndedEarly && <div className="text-orange-300 text-sm mb-2">⏱️ Game ended early</div>}
             <div className="text-3xl font-bold mb-2">{winner.name} WINS!</div>
             <div className="text-xl mb-4">Final Score: {winner.score} points</div>
-            <div className="text-sm text-purple-300">Final Standings:</div>
+            <div className="text-sm text-[#c9c6be]">Final Standings:</div>
             <div className="mt-2 space-y-1">
               {[...players].sort((a, b) => b.score - a.score).map((player, index) => (
                 <div key={player.id} className="text-lg">{index + 1}. {player.name}: {player.score} pts</div>
               ))}
             </div>
             <div className="mt-4 text-sm min-h-6">
-              {savingGame && <div className="text-purple-300 animate-pulse">💾 Saving game to stats...</div>}
+              {savingGame && <div className="text-[#c9c6be] animate-pulse">💾 Saving game to stats...</div>}
               {gameSaved && <div className="text-green-400">✓ Game saved to stats</div>}
               {saveError && (
                 <div className="text-red-400">
@@ -1567,8 +1602,8 @@ export default function NewGamePlusScorekeeper() {
               )}
             </div>
             <div className="flex gap-3 justify-center mt-4">
-              <button onClick={resetGame} className="bg-yellow-500 text-black px-8 py-3 rounded-lg font-bold text-lg">New Game</button>
-              <button onClick={() => setShowStats(true)} className="bg-blue-600 px-6 py-3 rounded-lg font-bold text-lg">📊 Stats</button>
+              <button onClick={resetGame} className="bg-[#ff8736] hover:bg-[#e6752b] text-[#14151d] px-8 py-3 rounded-lg font-bold text-lg">New Game</button>
+              <button onClick={() => setShowStats(true)} className="bg-[#4b4e63] hover:bg-[#63667d] px-6 py-3 rounded-lg font-bold text-lg">📊 Stats</button>
             </div>
           </div>
         )}
@@ -1578,19 +1613,24 @@ export default function NewGamePlusScorekeeper() {
           {players.map((player, index) => (
             <div key={player.id} className={`p-3 rounded-lg ${
               player.isDead ? 'bg-gray-800 opacity-60' :
-              index === currentPlayerIndex && !winner ? 'bg-yellow-500 text-black ring-4 ring-yellow-300' : 'bg-purple-800'
+              index === currentPlayerIndex && !winner ? 'bg-yellow-500 text-black ring-4 ring-yellow-300' : 'bg-[#282a3b]'
             } ${gamblingPlayers.includes(index) ? 'ring-4 ring-green-400' : ''}`}>
               <div className="flex items-center justify-between mb-1">
                 <input type="text" value={player.name} onChange={(e) => updatePlayerName(index, e.target.value)}
                   className="bg-transparent font-semibold w-full outline-none text-sm" disabled={player.isDead} />
                 <div className="flex gap-1 ml-2">
                   <button onClick={() => togglePoison(index)} disabled={player.isDead}
-                    className={`px-2 py-1 rounded text-xs font-bold ${(player.poisonLevel || 0) === 2 ? 'bg-purple-600 text-white' : player.isPoisoned ? 'bg-red-600 text-white' : 'bg-gray-600 text-white'} disabled:opacity-30`}>
+                    className={`px-2 py-1 rounded text-xs font-bold ${(player.poisonLevel || 0) === 2 ? 'bg-[#4b4e63] text-white' : player.isPoisoned ? 'bg-red-600 text-white' : 'bg-gray-600 text-white'} disabled:opacity-30`}>
                     {(player.poisonLevel || 0) === 2 ? '☠️☠️' : '☠️'}
                   </button>
                   <button onClick={() => toggleGamble(index)} disabled={index === currentPlayerIndex || player.isDead}
                     className={`px-2 py-1 rounded text-xs font-bold ${gamblingPlayers.includes(index) ? 'bg-green-600 text-white' : index === currentPlayerIndex || player.isDead ? 'bg-gray-400 text-gray-600 cursor-not-allowed' : 'bg-gray-600 text-white'}`}>
                     🎲
+                  </button>
+                  <button onClick={() => manualKillPlayer(index)} disabled={player.isDead}
+                    title="Kill player on command"
+                    className="px-2 py-1 rounded text-xs font-bold bg-red-700 hover:bg-red-600 text-white disabled:opacity-30 disabled:cursor-not-allowed">
+                    💀
                   </button>
                 </div>
               </div>
@@ -1616,7 +1656,7 @@ export default function NewGamePlusScorekeeper() {
                     </button>
                   </>
                 )}
-                {player.poisonLevel === 2 && !player.isDead && <div className="font-semibold text-purple-400">DOUBLE POISON</div>}
+                {player.poisonLevel === 2 && !player.isDead && <div className="font-semibold text-[#4fd8ac]">DOUBLE POISON</div>}
                 {player.poisonLevel === 1 && !player.isDead && <div className="font-semibold text-red-400">POISONED</div>}
                 {gamblingPlayers.includes(index) && !player.isDead && <div className="font-semibold text-green-400">GAMBLING</div>}
               </div>
@@ -1657,7 +1697,7 @@ export default function NewGamePlusScorekeeper() {
             )}
 
             <div className="space-y-3">
-              <button onClick={endTurn} className="w-full bg-purple-600 p-4 rounded-lg font-semibold text-lg">End Turn</button>
+              <button onClick={endTurn} className="w-full bg-[#4b4e63] p-4 rounded-lg font-semibold text-lg">End Turn</button>
 
               <div className="bg-green-700 p-4 rounded-lg">
                 <h3 className="font-semibold mb-2">✓ Success</h3>
@@ -1697,12 +1737,12 @@ export default function NewGamePlusScorekeeper() {
                 <h3 className="font-semibold mb-2">⚡ Special</h3>
                 <div className="grid grid-cols-2 gap-2 mb-2">
                   <button onClick={doubleTap} className="bg-blue-600 p-3 rounded-lg font-semibold text-sm">⚡⚡ Double Tap</button>
-                  <button onClick={tripleTap} className="bg-purple-600 p-3 rounded-lg font-semibold text-sm">⚡⚡⚡ Triple Tap</button>
+                  <button onClick={tripleTap} className="bg-[#4b4e63] p-3 rounded-lg font-semibold text-sm">⚡⚡⚡ Triple Tap</button>
                 </div>
                 <button onClick={schrodingerDoubleTap}
-                  className="w-full bg-indigo-700 hover:bg-indigo-600 p-3 rounded-lg font-semibold text-sm border border-indigo-400 transition-colors">
+                  className="w-full bg-[#a3477f] hover:bg-[#8f3d6e] p-3 rounded-lg font-semibold text-sm border border-[#ff66cc] transition-colors">
                   🐱 Schrödinger's Double Tap
-                  <div className="text-xs text-indigo-300 font-normal mt-1">50/50 — single tap or double tap?</div>
+                  <div className="text-xs text-[#ffa3e0] font-normal mt-1">50/50 — single tap or double tap?</div>
                 </button>
                 <div className="text-xs text-blue-200 text-center mt-2">💡 Tip: Click ☠️ on player cards to toggle poison status</div>
               </div>
