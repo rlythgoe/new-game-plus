@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   BarChart, Bar, Cell,
@@ -108,6 +108,27 @@ const ScratchBallSelector = ({ onSelectBall, label }) => {
   );
 };
 
+// ─── FATALITY ANIMATIONS ────────────────────────────────────────────────────
+// A stick figure "dies" a different random way each time someone loses a
+// Death Roll. 12 of these animate the whole figure; sliced/decapitated/exploded
+// animate individual limbs (see the CSS in `styles` further down).
+const FATALITY_ANIMATIONS = [
+  "fall-backward", "fall-forward", "spin-fly-off", "melt", "vaporize",
+  "electrocuted", "crushed", "frozen-shatter", "blown-away",
+  "sliced", "decapitated", "exploded", "ghost-departure", "sink", "launched",
+];
+
+const StickFigure = ({ anim }) => (
+  <svg viewBox="0 0 100 140" className={`fatality-anim-${anim}`} style={{ width: 160, height: 224, color: "#ff8736" }}>
+    <circle className="sf-head" cx="50" cy="18" r="11" fill="none" stroke="currentColor" strokeWidth="6" />
+    <line className="sf-bodyUpper" x1="50" y1="29" x2="50" y2="80" stroke="currentColor" strokeWidth="6" strokeLinecap="round" />
+    <line className="sf-armL" x1="50" y1="42" x2="22" y2="62" stroke="currentColor" strokeWidth="6" strokeLinecap="round" />
+    <line className="sf-armR" x1="50" y1="42" x2="78" y2="62" stroke="currentColor" strokeWidth="6" strokeLinecap="round" />
+    <line className="sf-legL" x1="50" y1="80" x2="28" y2="128" stroke="currentColor" strokeWidth="6" strokeLinecap="round" />
+    <line className="sf-legR" x1="50" y1="80" x2="72" y2="128" stroke="currentColor" strokeWidth="6" strokeLinecap="round" />
+  </svg>
+);
+
 const StatCard = ({ label, value, sub, color = "purple" }) => {
   const colors = {
     purple: "bg-[#282a3b]", green: "bg-green-800",
@@ -145,6 +166,31 @@ const quarterEnd = (key) => {
   const [q, year] = key.split(" ");
   const month = parseInt(q[1]) * 3;
   return new Date(parseInt(year), month, 1);
+};
+
+// ─── PLAYOFF HELPERS ────────────────────────────────────────────────────────
+
+// Thanksgiving = the 4th Thursday of November. Playoff seeding counts every
+// win from Jan 1 through end-of-day Thanksgiving of the given year, regardless
+// of the Leaderboard tab's season filter.
+const getThanksgiving = (year) => {
+  const nov1 = new Date(year, 10, 1);
+  const firstThursday = 1 + ((4 - nov1.getDay() + 7) % 7);
+  const fourthThursday = firstThursday + 21;
+  return new Date(year, 10, fourthThursday, 23, 59, 59, 999);
+};
+
+// Standard single-elimination seed order (e.g. for 8 seeds: [1,8,4,5,2,7,3,6])
+// so the top 2 seeds can only meet in the final, not an arbitrary 1-v-8/2-v-7 list.
+const seedOrder = (bracketSize) => {
+  let order = [1, 2];
+  while (order.length < bracketSize) {
+    const sum = order.length * 2 + 1;
+    const next = [];
+    order.forEach(s => { next.push(s); next.push(sum - s); });
+    order = next;
+  }
+  return order;
 };
 
 // ─── GAME PROGRESS CHART (per-player cumulative points for one game) ──────────
@@ -506,8 +552,54 @@ const StatsView = ({ onBack }) => {
     return { rows, playerNames };
   }, [games, stats]);
 
-  const tabs = ["leaderboard", "per-player", "gambling", "recent games"];
+  const tabs = ["leaderboard", "per-player", "gambling", "playoffs", "recent games"];
   const isCurrentSeason = selectedSeason === getCurrentQuarterKey();
+
+  // Projected playoff bracket: seeded on total wins from Jan 1 through
+  // Thanksgiving of the current year, independent of the Leaderboard's season
+  // filter above. Once actual playoffs start, this is the piece that'll grow
+  // to track live bracket progress instead of just a projection.
+  const playoffBracket = useMemo(() => {
+    const year = new Date().getFullYear();
+    const cutoff = getThanksgiving(year);
+    const yearStart = new Date(year, 0, 1);
+    const eligibleGameIds = new Set(
+      allGames
+        .filter(g => { const d = new Date(g.played_at); return d >= yearStart && d <= cutoff; })
+        .map(g => g.id)
+    );
+    const winCounts = {};
+    const gameCounts = {};
+    allResults
+      .filter(r => eligibleGameIds.has(r.game_id))
+      .forEach(r => {
+        gameCounts[r.player_name] = (gameCounts[r.player_name] || 0) + 1;
+        if (r.placement === 1) winCounts[r.player_name] = (winCounts[r.player_name] || 0) + 1;
+      });
+
+    const seeds = Object.keys(gameCounts)
+      .map(name => ({
+        name,
+        wins: winCounts[name] || 0,
+        games: gameCounts[name],
+        winRate: gameCounts[name] > 0 ? (winCounts[name] || 0) / gameCounts[name] : 0,
+      }))
+      .sort((a, b) => b.wins - a.wins || b.winRate - a.winRate || b.games - a.games)
+      .map((p, i) => ({ ...p, seed: i + 1 }));
+
+    if (seeds.length < 2) return { seeds, matchups: [], bracketSize: 0, cutoff };
+
+    let bracketSize = 2;
+    while (bracketSize < seeds.length) bracketSize *= 2;
+    const order = seedOrder(bracketSize);
+    const matchups = [];
+    for (let i = 0; i < order.length; i += 2) {
+      const seedA = seeds.find(s => s.seed === order[i]) || null;
+      const seedB = seeds.find(s => s.seed === order[i + 1]) || null;
+      matchups.push({ seedA, seedB });
+    }
+    return { seeds, matchups, bracketSize, cutoff };
+  }, [allGames, allResults]);
 
   // Detect a Recent Game click: toggle it open/closed, and pull that game's
   // shot-by-shot data (cached after the first fetch) to feed the progress chart.
@@ -577,13 +669,19 @@ const StatsView = ({ onBack }) => {
 
         {!loading && !error && (
           <>
-            <div className="flex gap-2 mb-6 bg-[#14151d] p-1 rounded-lg">
-              {tabs.map(t => (
-                <button key={t} onClick={() => setActiveTab(t)}
-                  className={`flex-1 py-2 px-3 rounded-md text-sm font-semibold capitalize transition-all ${activeTab === t ? 'bg-[#ff8736] text-[#14151d]' : 'text-[#c9c6be] hover:text-white'}`}>
-                  {t}
-                </button>
-              ))}
+            <div className="relative mb-6">
+              <select
+                value={activeTab}
+                onChange={(e) => setActiveTab(e.target.value)}
+                className="w-full appearance-none bg-[#14151d] border border-[#363849] text-white font-semibold capitalize py-3 px-4 pr-10 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-[#ff8736]"
+              >
+                {tabs.map(t => (
+                  <option key={t} value={t} className="capitalize bg-[#14151d] text-white">
+                    {t}
+                  </option>
+                ))}
+              </select>
+              <div className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[#ff8736] text-sm">▼</div>
             </div>
 
             {activeTab === "leaderboard" && (
@@ -804,6 +902,77 @@ const StatsView = ({ onBack }) => {
               </div>
             )}
 
+            {activeTab === "playoffs" && (
+              <div className="space-y-5">
+                <div className="bg-[#282a3b] rounded-lg p-3 text-sm text-[#c9c6be]">
+                  🏆 Projected seeding from all wins in {new Date().getFullYear()} through Thanksgiving
+                  ({playoffBracket.cutoff.toLocaleDateString()}). This updates automatically as more games get played —
+                  it's a projection, not a locked bracket. Once playoffs actually start, this tab will track live results instead.
+                </div>
+
+                {playoffBracket.seeds.length < 2 ? (
+                  <div className="text-center py-12 text-[#4fd8ac]">Not enough games played yet this year to project a bracket.</div>
+                ) : (
+                  <>
+                    {/* Seeding list */}
+                    <div>
+                      <div className="text-sm font-bold text-[#05e5af] mb-2">Seeding</div>
+                      <div className="space-y-1">
+                        {playoffBracket.seeds.map(s => (
+                          <div key={s.name} className="flex items-center justify-between bg-[#282a3b] rounded-lg px-3 py-2">
+                            <div className="flex items-center gap-3">
+                              <div className="w-7 h-7 rounded-full bg-[#4b4e63] flex items-center justify-center text-xs font-black">{s.seed}</div>
+                              <div className="font-semibold">{s.name}</div>
+                            </div>
+                            <div className="text-sm text-[#c9c6be]">{s.wins}W · {s.games}G</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Bracket shell: Round 1 is filled from seeding; later rounds are TBD
+                        until actual playoff results start feeding this tab. */}
+                    <div>
+                      <div className="text-sm font-bold text-[#05e5af] mb-2">Projected Bracket</div>
+                      <div className="flex gap-4 overflow-x-auto pb-2">
+                        <div className="flex flex-col gap-3 min-w-[220px]">
+                          <div className="text-xs uppercase tracking-wide text-[#c9c6be] text-center">Round 1</div>
+                          {playoffBracket.matchups.map((m, i) => (
+                            <div key={i} className="bg-[#282a3b] rounded-lg p-2 space-y-1">
+                              <div className={`flex items-center justify-between px-2 py-1.5 rounded ${m.seedA ? 'bg-[#1d1f2c]' : 'bg-transparent opacity-50'}`}>
+                                <span className="text-sm font-semibold">{m.seedA ? `#${m.seedA.seed} ${m.seedA.name}` : "—"}</span>
+                              </div>
+                              <div className="text-center text-[10px] text-[#63667d]">vs</div>
+                              <div className={`flex items-center justify-between px-2 py-1.5 rounded ${m.seedB ? 'bg-[#1d1f2c]' : 'bg-[#ff8736] bg-opacity-10'}`}>
+                                <span className="text-sm font-semibold">{m.seedB ? `#${m.seedB.seed} ${m.seedB.name}` : "BYE"}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {Array.from({ length: Math.log2(playoffBracket.bracketSize) - 1 }).map((_, roundIdx) => {
+                          const matchCount = playoffBracket.matchups.length / Math.pow(2, roundIdx + 1);
+                          const roundLabel = matchCount === 1 ? "Final" : matchCount === 2 ? "Semifinals" : `Round ${roundIdx + 2}`;
+                          return (
+                            <div key={roundIdx} className="flex flex-col justify-around gap-3 min-w-[180px]">
+                              <div className="text-xs uppercase tracking-wide text-[#c9c6be] text-center">{roundLabel}</div>
+                              {Array.from({ length: matchCount }).map((_, mIdx) => (
+                                <div key={mIdx} className="bg-[#282a3b] rounded-lg p-2 space-y-1 opacity-50">
+                                  <div className="px-2 py-1.5 rounded bg-[#1d1f2c] text-sm font-semibold">TBD</div>
+                                  <div className="text-center text-[10px] text-[#63667d]">vs</div>
+                                  <div className="px-2 py-1.5 rounded bg-[#1d1f2c] text-sm font-semibold">TBD</div>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
             {activeTab === "recent games" && (
               <div className="space-y-3">
                 {games.length === 0 && <div className="text-center py-12 text-[#4fd8ac]">No games in {selectedSeason} yet.</div>}
@@ -877,6 +1046,187 @@ const styles = `
     100% { transform: rotate(360deg) scale(1); }
   }
   .dice-roll-anim { animation: rollDice 0.3s linear infinite; display: inline-block; }
+
+  /* ── FATALITY sequence ──────────────────────────────────────────────── */
+
+  @keyframes fatalityShake {
+    0%, 100% { transform: translate(0, 0); }
+    10%, 30%, 50%, 70%, 90% { transform: translate(-6px, 0); }
+    20%, 40%, 60%, 80% { transform: translate(6px, 0); }
+  }
+  .fatality-shake { animation: fatalityShake 0.5s linear; }
+
+  @keyframes fatalityZoom {
+    0%   { transform: scale(6) rotate(-8deg); opacity: 0; }
+    60%  { transform: scale(0.9) rotate(2deg); opacity: 1; }
+    80%  { transform: scale(1.08) rotate(-1deg); }
+    100% { transform: scale(1) rotate(0deg); opacity: 1; }
+  }
+  .fatality-text { animation: fatalityZoom 0.7s cubic-bezier(.2,1.4,.6,1) both; animation-delay: 1.3s; opacity: 0; }
+
+  /* Whole-figure animations */
+  @keyframes sfFallBack {
+    0%   { transform: rotate(0deg) translateY(0); opacity: 1; }
+    60%  { transform: rotate(-80deg) translateY(10px); }
+    100% { transform: rotate(-92deg) translateY(20px); opacity: 0.9; }
+  }
+  .fatality-anim-fall-backward { animation: sfFallBack 1.3s cubic-bezier(.36,.07,.19,.97) forwards; transform-origin: 50% 62%; }
+
+  @keyframes sfFallFwd {
+    0%   { transform: rotate(0deg); }
+    60%  { transform: rotate(80deg) translateY(6px); }
+    100% { transform: rotate(95deg) translateY(16px); opacity: 0.9; }
+  }
+  .fatality-anim-fall-forward { animation: sfFallFwd 1.3s ease-in forwards; transform-origin: 50% 62%; }
+
+  @keyframes sfSpinFly {
+    0%   { transform: translate(0, 0) rotate(0); opacity: 1; }
+    100% { transform: translate(220px, -60px) rotate(900deg); opacity: 0; }
+  }
+  .fatality-anim-spin-fly-off { animation: sfSpinFly 1.4s ease-in forwards; }
+
+  @keyframes sfMelt {
+    0%   { transform: scaleY(1) scaleX(1); filter: none; }
+    60%  { transform: scaleY(0.5) scaleX(1.15); filter: blur(1px) hue-rotate(60deg); }
+    100% { transform: scaleY(0.05) scaleX(1.4) translateY(40px); opacity: 0.7; filter: blur(2px) hue-rotate(90deg); }
+  }
+  .fatality-anim-melt { animation: sfMelt 1.6s ease-in forwards; transform-origin: 50% 100%; }
+
+  @keyframes sfVaporize {
+    0%   { transform: scale(1); opacity: 1; filter: brightness(1); }
+    40%  { transform: scale(1.15); filter: brightness(2); }
+    100% { transform: scale(1.6); opacity: 0; filter: brightness(3) blur(6px); }
+  }
+  .fatality-anim-vaporize { animation: sfVaporize 1.2s ease-out forwards; }
+
+  @keyframes sfShock {
+    0%, 100% { transform: translate(0, 0) rotate(0); }
+    10% { transform: translate(-4px, 2px) rotate(-3deg); }
+    20% { transform: translate(4px, -2px) rotate(3deg); }
+    30% { transform: translate(-3px, 1px) rotate(-2deg); }
+    40% { transform: translate(3px, -1px) rotate(2deg); }
+    50% { transform: translate(-2px, 2px) rotate(-4deg); }
+    60% { transform: translate(2px, -2px) rotate(4deg); }
+    70% { opacity: 0.4; }
+    80% { opacity: 1; }
+    100% { transform: translateY(30px) rotate(8deg); opacity: 0.8; }
+  }
+  .fatality-anim-electrocuted { animation: sfShock 1.3s linear forwards; filter: drop-shadow(0 0 6px #ffe066); }
+
+  @keyframes sfCrush {
+    0%   { transform: scaleY(1); }
+    70%  { transform: scaleY(0.15) translateY(45px); }
+    100% { transform: scaleY(0.05) translateY(50px); }
+  }
+  .fatality-anim-crushed { animation: sfCrush 0.9s cubic-bezier(.6,0,1,1) forwards; transform-origin: 50% 100%; }
+
+  @keyframes sfFreeze {
+    0%   { filter: none; }
+    50%  { filter: brightness(1.4) saturate(0) hue-rotate(180deg); }
+    100% { filter: brightness(1.6) saturate(0) hue-rotate(180deg); opacity: 0; transform: scale(1.05); }
+  }
+  .fatality-anim-frozen-shatter { animation: sfFreeze 1.5s ease-in forwards; }
+
+  @keyframes sfBlown {
+    0%   { transform: translateX(0) skewX(0) rotate(0); opacity: 1; }
+    100% { transform: translateX(260px) skewX(-20deg) rotate(45deg); opacity: 0; }
+  }
+  .fatality-anim-blown-away { animation: sfBlown 1.3s ease-in forwards; }
+
+  @keyframes sfGhost {
+    0%   { transform: translateY(0); opacity: 1; filter: none; }
+    50%  { transform: translateY(-20px); opacity: 0.6; filter: grayscale(1) brightness(1.3); }
+    100% { transform: translateY(-140px); opacity: 0; filter: grayscale(1) brightness(1.5); }
+  }
+  .fatality-anim-ghost-departure { animation: sfGhost 1.8s ease-out forwards; }
+
+  @keyframes sfSink {
+    0%   { transform: translateY(0); opacity: 1; }
+    100% { transform: translateY(70px); opacity: 0; }
+  }
+  .fatality-anim-sink { animation: sfSink 1.4s ease-in forwards; }
+
+  @keyframes sfLaunch {
+    0%   { transform: translateY(0) scale(1) rotate(0); opacity: 1; }
+    30%  { transform: translateY(-20px) scale(1.05) rotate(30deg); }
+    100% { transform: translateY(-320px) scale(0.3) rotate(540deg); opacity: 0; }
+  }
+  .fatality-anim-launched { animation: sfLaunch 1.1s cubic-bezier(.5,0,.9,.4) forwards; }
+
+  /* Per-limb animations */
+  @keyframes sliceTopHalf {
+    0%   { transform: translate(0, 0) rotate(0); opacity: 1; }
+    100% { transform: translate(-30px, -15px) rotate(-15deg); opacity: 0.85; }
+  }
+  @keyframes sliceBottomHalf {
+    0%   { transform: translate(0, 0) rotate(0); opacity: 1; }
+    100% { transform: translate(30px, 25px) rotate(15deg); opacity: 0.85; }
+  }
+  .fatality-anim-sliced .sf-head,
+  .fatality-anim-sliced .sf-armL,
+  .fatality-anim-sliced .sf-armR,
+  .fatality-anim-sliced .sf-bodyUpper {
+    animation: sliceTopHalf 1s ease-out forwards; transform-box: fill-box; transform-origin: center;
+  }
+  .fatality-anim-sliced .sf-legL,
+  .fatality-anim-sliced .sf-legR {
+    animation: sliceBottomHalf 1s ease-out forwards; transform-box: fill-box; transform-origin: center;
+  }
+
+  @keyframes decapHead {
+    0%   { transform: translate(0, 0) rotate(0); opacity: 1; }
+    100% { transform: translate(40px, -90px) rotate(360deg); opacity: 0; }
+  }
+  @keyframes decapBody {
+    0%   { transform: translateY(0) rotate(0); opacity: 1; }
+    100% { transform: translateY(20px) rotate(8deg); opacity: 0.9; }
+  }
+  .fatality-anim-decapitated .sf-head {
+    animation: decapHead 1.1s ease-in forwards; transform-box: fill-box; transform-origin: center;
+  }
+  .fatality-anim-decapitated .sf-bodyUpper,
+  .fatality-anim-decapitated .sf-armL,
+  .fatality-anim-decapitated .sf-armR,
+  .fatality-anim-decapitated .sf-legL,
+  .fatality-anim-decapitated .sf-legR {
+    animation: decapBody 1.1s ease-in forwards; transform-box: fill-box; transform-origin: center;
+  }
+
+  @keyframes explHead { 0% { transform: translate(0,0) rotate(0); opacity: 1; } 100% { transform: translate(0,-90px) rotate(180deg); opacity: 0; } }
+  @keyframes explArmL { 0% { transform: translate(0,0) rotate(0); opacity: 1; } 100% { transform: translate(-90px,-30px) rotate(-200deg); opacity: 0; } }
+  @keyframes explArmR { 0% { transform: translate(0,0) rotate(0); opacity: 1; } 100% { transform: translate(90px,-30px) rotate(200deg); opacity: 0; } }
+  @keyframes explBody { 0% { transform: translate(0,0) scale(1); opacity: 1; } 100% { transform: translate(0,20px) scale(0.6); opacity: 0; } }
+  @keyframes explLegL { 0% { transform: translate(0,0) rotate(0); opacity: 1; } 100% { transform: translate(-60px,80px) rotate(-160deg); opacity: 0; } }
+  @keyframes explLegR { 0% { transform: translate(0,0) rotate(0); opacity: 1; } 100% { transform: translate(60px,80px) rotate(160deg); opacity: 0; } }
+  .fatality-anim-exploded .sf-head { animation: explHead 0.9s ease-out forwards; transform-box: fill-box; transform-origin: center; }
+  .fatality-anim-exploded .sf-armL { animation: explArmL 0.9s ease-out forwards; transform-box: fill-box; transform-origin: center; }
+  .fatality-anim-exploded .sf-armR { animation: explArmR 0.9s ease-out forwards; transform-box: fill-box; transform-origin: center; }
+  .fatality-anim-exploded .sf-bodyUpper { animation: explBody 0.9s ease-out forwards; transform-box: fill-box; transform-origin: center; }
+  .fatality-anim-exploded .sf-legL { animation: explLegL 0.9s ease-out forwards; transform-box: fill-box; transform-origin: center; }
+  .fatality-anim-exploded .sf-legR { animation: explLegR 0.9s ease-out forwards; transform-box: fill-box; transform-origin: center; }
+
+  /* ── Storylines: live in-game momentum on a player's card ──────────────── */
+
+  @keyframes flameGlow {
+    0%, 100% { box-shadow: 0 0 10px 2px rgba(255,135,54,0.6); }
+    50%      { box-shadow: 0 0 22px 6px rgba(255,87,34,0.9), 0 0 10px 2px rgba(255,200,0,0.6); }
+  }
+  .storyline-hot-1 { animation: flameGlow 1.4s ease-in-out infinite; border: 2px solid #ff8736; }
+  .storyline-hot-2 { animation: flameGlow 0.8s ease-in-out infinite; border: 2px solid #ff3300; }
+
+  @keyframes coldPulse {
+    0%, 100% { box-shadow: 0 0 8px 1px rgba(100,120,160,0.5); }
+    50%      { box-shadow: 0 0 16px 3px rgba(80,100,150,0.75); }
+  }
+  @keyframes crumbleShake {
+    0%, 100% { transform: translate(0, 0) rotate(0); }
+    20% { transform: translate(-1px, 0) rotate(-0.4deg); }
+    40% { transform: translate(1px, 0) rotate(0.4deg); }
+    60% { transform: translate(-1px, 0) rotate(-0.3deg); }
+    80% { transform: translate(1px, 0) rotate(0.3deg); }
+  }
+  .storyline-cold-1 { animation: coldPulse 1.8s ease-in-out infinite; border: 2px solid #63667d; filter: saturate(0.85); }
+  .storyline-cold-2 { animation: coldPulse 1s ease-in-out infinite, crumbleShake 0.6s ease-in-out infinite; border: 2px solid #3a3f52; filter: saturate(0.6) brightness(0.9); }
 `;
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
@@ -894,6 +1244,9 @@ export default function NewGamePlusScorekeeper() {
   const [diceResult, setDiceResult] = useState(null);
   const [diceRolling, setDiceRolling] = useState(false);
   const [rollingPlayer, setRollingPlayer] = useState(null);
+  const [showFatality, setShowFatality] = useState(false);
+  const [fatalityAnim, setFatalityAnim] = useState(null);
+  const fatalityTimeoutRef = useRef(null);
   const [editingScore, setEditingScore] = useState(null);
   const [showCoinFlip, setShowCoinFlip] = useState(false);
   const [coinResult, setCoinResult] = useState(null);
@@ -962,12 +1315,33 @@ export default function NewGamePlusScorekeeper() {
       setDiceResult(result);
       logShot(players[rollingPlayer]?.name, 'death_roll', targetBall, result);
       setTimeout(() => {
-        if (result === 'ghost') killPlayer(rollingPlayer);
         setShowDiceRoll(false);
         setDiceResult(null);
-        setRollingPlayer(null);
+        if (result === 'ghost') {
+          // Hand off to the Fatality sequence instead of killing immediately —
+          // rollingPlayer stays set until finishFatality() actually applies it.
+          const anim = FATALITY_ANIMATIONS[Math.floor(Math.random() * FATALITY_ANIMATIONS.length)];
+          setFatalityAnim(anim);
+          setShowFatality(true);
+          fatalityTimeoutRef.current = setTimeout(finishFatality, 3400);
+        } else {
+          setRollingPlayer(null);
+        }
       }, 2200);
     }, 1800);
+  };
+
+  const finishFatality = () => {
+    if (fatalityTimeoutRef.current) {
+      clearTimeout(fatalityTimeoutRef.current);
+      fatalityTimeoutRef.current = null;
+    }
+    setShowFatality(prev => {
+      if (prev && rollingPlayer !== null) killPlayer(rollingPlayer);
+      return false;
+    });
+    setFatalityAnim(null);
+    setRollingPlayer(null);
   };
 
   const killPlayer = (playerIndex) => {
@@ -1357,6 +1731,40 @@ export default function NewGamePlusScorekeeper() {
     gamblingPlayers.length === numPlayers - 1 &&
     gamblingPlayers.every(idx => idx !== currentPlayerIndex);
 
+  // ── Storylines ───────────────────────────────────────────────────────────
+  // Live, in-game momentum per player, derived from this game's own shotLog —
+  // NBA Jam style: string together positive point_deltas and you catch fire;
+  // string together negative ones and the wheels come off. Resets whenever a
+  // neutral-delta event (a Death Roll survival, a scratch outcome someone else
+  // bet on, etc.) breaks the run.
+  const playerStorylines = useMemo(() => {
+    const storylines = {};
+    players.forEach(player => {
+      const myShots = shotLog.filter(s => s.player_name === player.name);
+      let hotStreak = 0;
+      let coldStreak = 0;
+      for (let i = myShots.length - 1; i >= 0; i--) {
+        const delta = myShots[i].point_delta ?? 0;
+        if (delta > 0) {
+          if (coldStreak > 0) break;
+          hotStreak++;
+        } else if (delta < 0) {
+          if (hotStreak > 0) break;
+          coldStreak++;
+        } else {
+          break; // neutral event ends whichever streak was building
+        }
+      }
+      let status = null;
+      if (hotStreak >= 5) status = { kind: 'hot', tier: 2, label: '🔥🔥 ON FIRE!', streak: hotStreak };
+      else if (hotStreak >= 3) status = { kind: 'hot', tier: 1, label: '🔥 Heating Up!', streak: hotStreak };
+      else if (coldStreak >= 5) status = { kind: 'cold', tier: 2, label: '🧊 Falling Apart!', streak: coldStreak };
+      else if (coldStreak >= 3) status = { kind: 'cold', tier: 1, label: '📉 Cold Streak', streak: coldStreak };
+      storylines[player.name] = status;
+    });
+    return storylines;
+  }, [shotLog, players]);
+
   // Auto-save when winner is determined
   useEffect(() => {
     if (winner && !gameSaved && !savingGame && players.length > 0) {
@@ -1429,6 +1837,28 @@ export default function NewGamePlusScorekeeper() {
               )}
               {diceRolling && <div className="text-gray-400 text-lg font-semibold animate-pulse">Rolling...</div>}
               {diceResult !== null && <div className="text-gray-500 text-sm animate-pulse mt-2">Resolving...</div>}
+            </div>
+          </div>
+        )}
+
+        {/* Fatality Overlay */}
+        {showFatality && (
+          <div
+            onClick={finishFatality}
+            className="fixed inset-0 z-[60] flex flex-col items-center justify-center bg-black bg-opacity-90 overflow-hidden fatality-shake cursor-pointer"
+          >
+            <StickFigure anim={fatalityAnim} />
+            <div className="fatality-text text-center mt-2 px-4">
+              <div
+                className="text-6xl sm:text-7xl font-black tracking-wider"
+                style={{ color: "#ff0033", textShadow: "0 0 20px rgba(255,0,40,0.8), 3px 3px 0 #000" }}
+              >
+                FATALITY
+              </div>
+              <div className="text-xl font-bold text-white mt-2">
+                {players[rollingPlayer]?.name} has been eliminated
+              </div>
+              <div className="text-xs text-[#c9c6be] mt-3">(tap to continue)</div>
             </div>
           </div>
         )}
@@ -1515,15 +1945,24 @@ export default function NewGamePlusScorekeeper() {
                         <span className="text-[#c9c6be] text-sm ml-2">{player.score} pts</span>
                         {player.isDead && <span className="text-red-400 text-xs ml-2">💀</span>}
                       </div>
-                      {confirmRemove === index ? (
-                        <div className="flex gap-2">
-                          <button onClick={() => setConfirmRemove(null)} className="text-xs bg-gray-600 px-2 py-1 rounded">Cancel</button>
-                          <button onClick={() => removePlayer(index)} className="text-xs bg-red-600 px-2 py-1 rounded font-bold">Remove</button>
-                        </div>
-                      ) : (
-                        <button onClick={() => setConfirmRemove(index)}
-                          className="text-xs bg-red-800 hover:bg-red-600 px-2 py-1 rounded text-red-300 hover:text-white">✕</button>
-                      )}
+                      <div className="flex gap-2 items-center">
+                        {!player.isDead && (
+                          <button onClick={() => manualKillPlayer(index)}
+                            title="Kill player on command"
+                            className="text-xs bg-red-800 hover:bg-red-600 px-2 py-1 rounded text-red-300 hover:text-white font-bold">
+                            💀 Kill
+                          </button>
+                        )}
+                        {confirmRemove === index ? (
+                          <div className="flex gap-2">
+                            <button onClick={() => setConfirmRemove(null)} className="text-xs bg-gray-600 px-2 py-1 rounded">Cancel</button>
+                            <button onClick={() => removePlayer(index)} className="text-xs bg-red-600 px-2 py-1 rounded font-bold">Remove</button>
+                          </div>
+                        ) : (
+                          <button onClick={() => setConfirmRemove(index)}
+                            className="text-xs bg-red-800 hover:bg-red-600 px-2 py-1 rounded text-red-300 hover:text-white">✕</button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1610,11 +2049,18 @@ export default function NewGamePlusScorekeeper() {
 
         {/* Player Cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-          {players.map((player, index) => (
+          {players.map((player, index) => {
+            const storyline = playerStorylines[player.name];
+            const storylineClass = storyline
+              ? storyline.kind === 'hot'
+                ? (storyline.tier === 2 ? 'storyline-hot-2' : 'storyline-hot-1')
+                : (storyline.tier === 2 ? 'storyline-cold-2' : 'storyline-cold-1')
+              : '';
+            return (
             <div key={player.id} className={`p-3 rounded-lg ${
               player.isDead ? 'bg-gray-800 opacity-60' :
               index === currentPlayerIndex && !winner ? 'bg-yellow-500 text-black ring-4 ring-yellow-300' : 'bg-[#282a3b]'
-            } ${gamblingPlayers.includes(index) ? 'ring-4 ring-green-400' : ''}`}>
+            } ${gamblingPlayers.includes(index) ? 'ring-4 ring-green-400' : ''} ${player.isDead ? '' : storylineClass}`}>
               <div className="flex items-center justify-between mb-1">
                 <input type="text" value={player.name} onChange={(e) => updatePlayerName(index, e.target.value)}
                   className="bg-transparent font-semibold w-full outline-none text-sm" disabled={player.isDead} />
@@ -1626,11 +2072,6 @@ export default function NewGamePlusScorekeeper() {
                   <button onClick={() => toggleGamble(index)} disabled={index === currentPlayerIndex || player.isDead}
                     className={`px-2 py-1 rounded text-xs font-bold ${gamblingPlayers.includes(index) ? 'bg-green-600 text-white' : index === currentPlayerIndex || player.isDead ? 'bg-gray-400 text-gray-600 cursor-not-allowed' : 'bg-gray-600 text-white'}`}>
                     🎲
-                  </button>
-                  <button onClick={() => manualKillPlayer(index)} disabled={player.isDead}
-                    title="Kill player on command"
-                    className="px-2 py-1 rounded text-xs font-bold bg-red-700 hover:bg-red-600 text-white disabled:opacity-30 disabled:cursor-not-allowed">
-                    💀
                   </button>
                 </div>
               </div>
@@ -1644,6 +2085,12 @@ export default function NewGamePlusScorekeeper() {
                 </div>
               ) : (
                 <div onClick={() => setEditingScore(index)} className="text-3xl font-bold cursor-pointer hover:opacity-80" title="Click to edit">{player.score}</div>
+              )}
+
+              {storyline && !player.isDead && (
+                <div className={`text-[11px] font-black mt-0.5 ${storyline.kind === 'hot' ? 'text-[#ff8736]' : 'text-[#9fb4d1]'}`}>
+                  {storyline.label}
+                </div>
               )}
 
               <div className="flex gap-2 text-xs mt-1 items-center flex-wrap">
@@ -1661,7 +2108,8 @@ export default function NewGamePlusScorekeeper() {
                 {gamblingPlayers.includes(index) && !player.isDead && <div className="font-semibold text-green-400">GAMBLING</div>}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         {!winner && (
