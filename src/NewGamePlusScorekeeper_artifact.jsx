@@ -601,6 +601,61 @@ const StatsView = ({ onBack }) => {
     return { seeds, matchups, bracketSize, cutoff };
   }, [allGames, allResults]);
 
+  // Precise pixel geometry for the bracket: every match box is vertically
+  // centered over the midpoint of the two matches that feed into it, and every
+  // connector line is a simple right-angle elbow (two stubs + a vertical joiner)
+  // computed from that same geometry — no guessing, no CSS flexbox approximation.
+  const BRACKET_MATCH_H = 64;
+  const BRACKET_ROW_GAP = 16;
+  const BRACKET_COL_W = 200;
+  const BRACKET_COL_GAP = 56;
+
+  const bracketLayout = useMemo(() => {
+    const n0 = playoffBracket.matchups.length;
+    if (n0 === 0) return null;
+    const numRounds = Math.log2(playoffBracket.bracketSize); // includes the final
+    const unit = BRACKET_MATCH_H + BRACKET_ROW_GAP; // vertical period of round-1 slots
+    const totalHeight = n0 * unit - BRACKET_ROW_GAP;
+    const totalWidth = numRounds * BRACKET_COL_W + (numRounds - 1) * BRACKET_COL_GAP;
+
+    // centerY(r, i): vertical center (px) of round r (0-indexed), match i.
+    const centerY = (r, i) => i * Math.pow(2, r) * unit + ((Math.pow(2, r) - 1) * unit) / 2 + BRACKET_MATCH_H / 2;
+    const colX = (r) => r * (BRACKET_COL_W + BRACKET_COL_GAP);
+
+    const rounds = [];
+    for (let r = 0; r < numRounds; r++) {
+      const count = n0 / Math.pow(2, r);
+      const label = count === 1 ? "Final" : count === 2 ? "Semifinals" : `Round ${r + 1}`;
+      const matches = [];
+      for (let i = 0; i < count; i++) {
+        matches.push({
+          x: colX(r),
+          y: centerY(r, i) - BRACKET_MATCH_H / 2,
+          data: r === 0 ? playoffBracket.matchups[i] : null,
+        });
+      }
+      rounds.push({ label, matches });
+    }
+
+    const connectors = [];
+    for (let r = 0; r < numRounds - 1; r++) {
+      const parentCount = n0 / Math.pow(2, r + 1);
+      for (let k = 0; k < parentCount; k++) {
+        const yA = centerY(r, 2 * k);
+        const yB = centerY(r, 2 * k + 1);
+        const xChildRight = colX(r) + BRACKET_COL_W;
+        const xMid = xChildRight + BRACKET_COL_GAP / 2;
+        const xParentLeft = colX(r + 1);
+        connectors.push({
+          elbow: `M ${xChildRight} ${yA} H ${xMid} V ${yB} H ${xChildRight}`,
+          stub: `M ${xMid} ${(yA + yB) / 2} H ${xParentLeft}`,
+        });
+      }
+    }
+
+    return { numRounds, totalWidth, totalHeight, rounds, connectors };
+  }, [playoffBracket]);
+
   // Detect a Recent Game click: toggle it open/closed, and pull that game's
   // shot-by-shot data (cached after the first fetch) to feed the progress chart.
   const toggleGameExpand = async (game) => {
@@ -931,41 +986,62 @@ const StatsView = ({ onBack }) => {
                     </div>
 
                     {/* Bracket shell: Round 1 is filled from seeding; later rounds are TBD
-                        until actual playoff results start feeding this tab. */}
+                        until actual playoff results start feeding this tab. Every box and
+                        connector line is positioned from bracketLayout's exact pixel math,
+                        so later rounds line up over the real midpoint of their two feeders. */}
                     <div>
                       <div className="text-sm font-bold text-[#05e5af] mb-2">Projected Bracket</div>
-                      <div className="flex gap-4 overflow-x-auto pb-2">
-                        <div className="flex flex-col gap-3 min-w-[220px]">
-                          <div className="text-xs uppercase tracking-wide text-[#c9c6be] text-center">Round 1</div>
-                          {playoffBracket.matchups.map((m, i) => (
-                            <div key={i} className="bg-[#282a3b] rounded-lg p-2 space-y-1">
-                              <div className={`flex items-center justify-between px-2 py-1.5 rounded ${m.seedA ? 'bg-[#1d1f2c]' : 'bg-transparent opacity-50'}`}>
-                                <span className="text-sm font-semibold">{m.seedA ? `#${m.seedA.seed} ${m.seedA.name}` : "—"}</span>
-                              </div>
-                              <div className="text-center text-[10px] text-[#63667d]">vs</div>
-                              <div className={`flex items-center justify-between px-2 py-1.5 rounded ${m.seedB ? 'bg-[#1d1f2c]' : 'bg-[#ff8736] bg-opacity-10'}`}>
-                                <span className="text-sm font-semibold">{m.seedB ? `#${m.seedB.seed} ${m.seedB.name}` : "BYE"}</span>
-                              </div>
+                      <div className="overflow-x-auto pb-2">
+                        <div className="relative" style={{ width: bracketLayout.totalWidth, height: bracketLayout.totalHeight + 28 }}>
+                          {/* Round headers */}
+                          {bracketLayout.rounds.map((round, r) => (
+                            <div
+                              key={`hdr-${r}`}
+                              className="absolute top-0 text-xs uppercase tracking-wide text-[#c9c6be] text-center"
+                              style={{ left: r * (BRACKET_COL_W + BRACKET_COL_GAP), width: BRACKET_COL_W }}
+                            >
+                              {round.label}
                             </div>
                           ))}
-                        </div>
 
-                        {Array.from({ length: Math.log2(playoffBracket.bracketSize) - 1 }).map((_, roundIdx) => {
-                          const matchCount = playoffBracket.matchups.length / Math.pow(2, roundIdx + 1);
-                          const roundLabel = matchCount === 1 ? "Final" : matchCount === 2 ? "Semifinals" : `Round ${roundIdx + 2}`;
-                          return (
-                            <div key={roundIdx} className="flex flex-col justify-around gap-3 min-w-[180px]">
-                              <div className="text-xs uppercase tracking-wide text-[#c9c6be] text-center">{roundLabel}</div>
-                              {Array.from({ length: matchCount }).map((_, mIdx) => (
-                                <div key={mIdx} className="bg-[#282a3b] rounded-lg p-2 space-y-1 opacity-50">
-                                  <div className="px-2 py-1.5 rounded bg-[#1d1f2c] text-sm font-semibold">TBD</div>
-                                  <div className="text-center text-[10px] text-[#63667d]">vs</div>
-                                  <div className="px-2 py-1.5 rounded bg-[#1d1f2c] text-sm font-semibold">TBD</div>
+                          {/* Connector lines, drawn under the match boxes */}
+                          <svg
+                            className="absolute left-0"
+                            style={{ top: 28, width: bracketLayout.totalWidth, height: bracketLayout.totalHeight }}
+                          >
+                            {bracketLayout.connectors.map((c, i) => (
+                              <g key={i}>
+                                <path d={c.elbow} fill="none" stroke="#4b4e63" strokeWidth="2" />
+                                <path d={c.stub} fill="none" stroke="#4b4e63" strokeWidth="2" />
+                              </g>
+                            ))}
+                          </svg>
+
+                          {/* Match boxes */}
+                          {bracketLayout.rounds.map((round, r) => round.matches.map((m, i) => (
+                            <div
+                              key={`m-${r}-${i}`}
+                              className="absolute"
+                              style={{ left: m.x, top: m.y + 28, width: BRACKET_COL_W, height: BRACKET_MATCH_H }}
+                            >
+                              {m.data ? (
+                                <div className="bg-[#282a3b] rounded-lg h-full flex flex-col justify-between p-1.5">
+                                  <div className={`flex-1 flex items-center px-2 rounded text-sm font-semibold truncate ${m.data.seedA ? 'bg-[#1d1f2c]' : 'bg-transparent opacity-50'}`}>
+                                    {m.data.seedA ? `#${m.data.seedA.seed} ${m.data.seedA.name}` : "—"}
+                                  </div>
+                                  <div className={`flex-1 flex items-center px-2 rounded text-sm font-semibold truncate mt-1 ${m.data.seedB ? 'bg-[#1d1f2c]' : 'bg-[#ff8736] bg-opacity-10'}`}>
+                                    {m.data.seedB ? `#${m.data.seedB.seed} ${m.data.seedB.name}` : "BYE"}
+                                  </div>
                                 </div>
-                              ))}
+                              ) : (
+                                <div className="bg-[#282a3b] rounded-lg h-full flex flex-col justify-between p-1.5 opacity-50">
+                                  <div className="flex-1 flex items-center px-2 rounded bg-[#1d1f2c] text-sm font-semibold">TBD</div>
+                                  <div className="flex-1 flex items-center px-2 rounded bg-[#1d1f2c] text-sm font-semibold mt-1">TBD</div>
+                                </div>
+                              )}
                             </div>
-                          );
-                        })}
+                          )))}
+                        </div>
                       </div>
                     </div>
                   </>
