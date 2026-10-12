@@ -438,12 +438,18 @@ const StatsView = ({ onBack }) => {
     const filteredResults = allResults.filter(r => filteredGameIds.has(r.game_id));
     const filteredShots = allShots.filter(s => filteredGameIds.has(s.game_id));
 
+    // Weighted wins: a win is worth as many points as there were players in that
+    // game, so beating a full table counts for more than beating one opponent.
+    // Used as the leaderboard tiebreaker when players have the same win count.
+    const playersInGame = {};
+    allGames.forEach(g => { playersInGame[g.id] = g.player_count ?? g.player_names?.length ?? 0; });
+
     const playerMap = {};
     filteredResults.forEach(r => {
       if (!playerMap[r.player_name]) {
         playerMap[r.player_name] = {
           name: r.player_name,
-          games: 0, wins: 0, totalScore: 0, bestScore: -Infinity,
+          games: 0, wins: 0, weightedWins: 0, totalScore: 0, bestScore: -Infinity,
           totalBallsPocketed: 0, totalRicochets: 0,
           totalScratches: 0, totalDeathRolls: 0, totalDeaths: 0,
           placements: [],
@@ -462,7 +468,10 @@ const StatsView = ({ onBack }) => {
       }
       const p = playerMap[r.player_name];
       p.games++;
-      if (r.placement === 1) p.wins++;
+      if (r.placement === 1) {
+        p.wins++;
+        p.weightedWins += playersInGame[r.game_id] || 0;
+      }
       p.totalScore += r.final_score;
       if (r.final_score > p.bestScore) p.bestScore = r.final_score;
       p.placements.push(r.placement);
@@ -522,8 +531,8 @@ const StatsView = ({ onBack }) => {
       gambleWinRate: (p.gambleWins + p.gambleLosses) > 0
         ? ((p.gambleWins / (p.gambleWins + p.gambleLosses)) * 100).toFixed(0)
         : null,
-    })).sort((a, b) => b.wins - a.wins || b.winRate - a.winRate);
-  }, [allResults, allShots, filteredGameIds]);
+    })).sort((a, b) => b.wins - a.wins || b.weightedWins - a.weightedWins || b.winRate - a.winRate);
+  }, [allResults, allShots, allGames, filteredGameIds]);
 
   const gamblingStats = useMemo(
     () => [...stats].sort((a, b) => b.netGamblingPoints - a.netGamblingPoints),
@@ -1035,6 +1044,7 @@ const StatsView = ({ onBack }) => {
                       <div className="ml-auto text-right">
                         <div className="text-2xl font-black text-green-400">{p.wins} W</div>
                         <div className="text-sm opacity-70">{p.winRate}% win rate</div>
+                        <div className="text-sm opacity-70">{p.weightedWins} weighted wins</div>
                       </div>
                     </div>
                     <div className="grid grid-cols-4 gap-2">
