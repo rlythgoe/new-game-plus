@@ -248,6 +248,7 @@ const shotDescription = (shot) => {
     case "death_reset": return "score reset (Death Roll / resurrection)";
     case "poison_tick": return `poison tick (level ${n})`;
     case "triple_tap": return "Triple Tap (score flipped)";
+    case "inactive_penalty": return "missed a turn while inactive (-1)";
     case "manual_adjustment": return `manual score adjustment (${shot.point_delta > 0 ? "+" : ""}${shot.point_delta})`;
     case "abraham_clinkin_made": return `Abraham Clinkin' — made it`;
     case "abraham_clinkin_noScratch": return `Abraham Clinkin' — no scratch`;
@@ -380,7 +381,7 @@ const StatsView = ({ onBack }) => {
   const [allShots, setAllShots] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [activeTab, setActiveTab] = useState("leaderboard");
+  const [activeTab, setActiveTab] = useState("headlines");
   const [selectedSeason, setSelectedSeason] = useState(getCurrentQuarterKey());
 
   // Recent Games → per-game shot-by-shot chart
@@ -552,7 +553,7 @@ const StatsView = ({ onBack }) => {
     return { rows, playerNames };
   }, [games, stats]);
 
-  const tabs = ["leaderboard", "per-player", "gambling", "playoffs", "recent games"];
+  const tabs = ["headlines", "leaderboard", "per-player", "gambling", "playoffs", "recent games"];
   const isCurrentSeason = selectedSeason === getCurrentQuarterKey();
 
   // Projected playoff bracket: seeded on total wins from Jan 1 through
@@ -656,6 +657,197 @@ const StatsView = ({ onBack }) => {
     return { numRounds, totalWidth, totalHeight, rounds, connectors };
   }, [playoffBracket]);
 
+  // ── Headlines: the "front page" ────────────────────────────────────────────
+  // Auto-generates a top story from the most recent game plus a handful of
+  // league-wide trend headlines, entirely from allGames/allResults/allShots —
+  // the same data already loaded for every other tab, just read as storylines
+  // instead of tables.
+  const headlines = useMemo(() => {
+    if (allGames.length === 0) return { topStory: null, trends: [], byTheNumbers: null };
+
+    const sortedGames = [...allGames].sort((a, b) => new Date(b.played_at) - new Date(a.played_at));
+    const mostRecent = sortedGames[0];
+
+    // ── Top story: dig into the most recent game's shot log ──
+    let topStory = null;
+    if (mostRecent) {
+      const gameResults = allResults.filter(r => r.game_id === mostRecent.id).sort((a, b) => a.placement - b.placement);
+      const gameShots = allShots.filter(s => s.game_id === mostRecent.id);
+      const playerNames = mostRecent.player_names || gameResults.map(r => r.player_name);
+      const winnerName = mostRecent.winner_name;
+      const winnerResult = gameResults.find(r => r.player_name === winnerName);
+      const runnerUp = gameResults.find(r => r.placement === 2);
+      const margin = winnerResult && runnerUp ? winnerResult.final_score - runnerUp.final_score : null;
+
+      let biggestDeficit = 0;
+      if (gameShots.length > 0 && playerNames.length > 1) {
+        const series = buildCumulativeSeries(gameShots, playerNames);
+        series.forEach(row => {
+          const winnerScore = row[winnerName] ?? 0;
+          const others = playerNames.filter(n => n !== winnerName).map(n => row[n] ?? 0);
+          const deficit = others.length > 0 ? Math.max(...others) - winnerScore : 0;
+          if (deficit > biggestDeficit) biggestDeficit = deficit;
+        });
+      }
+
+      const ghostNames = [...new Set(
+        gameShots.filter(s => s.shot_type === 'death_roll' && s.result === 'ghost').map(s => s.player_name)
+      )];
+
+      let headline, kicker;
+      if (biggestDeficit >= 15) {
+        headline = `${winnerName} Overcomes ${biggestDeficit}-Point Deficit to Win`;
+        kicker = "COMEBACK OF THE WEEK";
+      } else if (margin !== null && margin <= 5) {
+        headline = `${winnerName} Edges Out Nail-Biter, Wins by Just ${margin}`;
+        kicker = "THRILLER";
+      } else if (ghostNames.length > 0) {
+        headline = `${winnerName} Wins as Fatality Claims ${ghostNames.join(" & ")}`;
+        kicker = "CARNAGE ON THE FELT";
+      } else if (margin !== null && margin >= 30) {
+        headline = `${winnerName} Delivers a ${margin}-Point Blowout`;
+        kicker = "DOMINANT PERFORMANCE";
+      } else {
+        headline = `${winnerName} Takes Down the Table`;
+        kicker = "GAME RECAP";
+      }
+
+      const dateStr = mostRecent.played_at ? new Date(mostRecent.played_at).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }) : '';
+      const bodyParts = [
+        `${winnerName} defeated ${playerNames.filter(n => n !== winnerName).join(", ")} on ${dateStr}, finishing with ${winnerResult ? winnerResult.final_score : mostRecent.winner_score} points${runnerUp ? ` to ${runnerUp.player_name}'s ${runnerUp.final_score}` : ""}.`,
+      ];
+      if (ghostNames.length > 0 && biggestDeficit >= 15) {
+        bodyParts.push(`${ghostNames.join(" and ")} didn't survive the table along the way.`);
+      }
+      if (mostRecent.ended_early) bodyParts.push(`The game was called early.`);
+
+      topStory = { headline, kicker, body: bodyParts.join(" ") };
+    }
+
+    // ── Trend candidates, scored by "interest," deduped by subject ──
+    const candidates = [];
+
+    // Current win streaks (most recent games backward, per player)
+    const byPlayerGames = {};
+    allResults.forEach(r => {
+      const g = allGames.find(g => g.id === r.game_id);
+      if (!g) return;
+      if (!byPlayerGames[r.player_name]) byPlayerGames[r.player_name] = [];
+      byPlayerGames[r.player_name].push({ played_at: g.played_at, won: r.placement === 1 });
+    });
+    Object.entries(byPlayerGames).forEach(([name, games]) => {
+      const sorted = [...games].sort((a, b) => new Date(b.played_at) - new Date(a.played_at));
+      let streak = 0;
+      for (const g of sorted) { if (g.won) streak++; else break; }
+      if (streak >= 2) {
+        candidates.push({
+          subject: name,
+          headline: `${name} Riding a ${streak}-Game Win Streak`,
+          blurb: `Hasn't lost in ${streak} straight games.`,
+          interest: streak * 10,
+        });
+      }
+      let coldStreak = 0;
+      for (const g of sorted) { if (!g.won) coldStreak++; else break; }
+      if (coldStreak >= 3) {
+        candidates.push({
+          subject: name,
+          headline: `${name} Searching for Answers After ${coldStreak} Straight Losses`,
+          blurb: `Hasn't won since their last victory, ${coldStreak} games ago.`,
+          interest: coldStreak * 9,
+        });
+      }
+    });
+
+    // All-time high score
+    if (allResults.length > 0) {
+      const topScore = allResults.reduce((max, r) => r.final_score > max.final_score ? r : max, allResults[0]);
+      const g = allGames.find(g => g.id === topScore.game_id);
+      candidates.push({
+        subject: topScore.player_name,
+        headline: `${topScore.player_name} Holds the League Record at ${topScore.final_score} Points`,
+        blurb: g ? `Set on ${new Date(g.played_at).toLocaleDateString()}.` : '',
+        interest: 55,
+      });
+    }
+
+    // Most Fatalities (ghost death rolls) all-time
+    const deathCounts = {};
+    allShots.filter(s => s.shot_type === 'death_roll' && s.result === 'ghost').forEach(s => {
+      deathCounts[s.player_name] = (deathCounts[s.player_name] || 0) + 1;
+    });
+    const deathLeaderEntry = Object.entries(deathCounts).sort((a, b) => b[1] - a[1])[0];
+    if (deathLeaderEntry && deathLeaderEntry[1] >= 2) {
+      candidates.push({
+        subject: deathLeaderEntry[0],
+        headline: `${deathLeaderEntry[0]} Leads the League in Fatalities (${deathLeaderEntry[1]})`,
+        blurb: `No one has met the Death Roll more often.`,
+        interest: deathLeaderEntry[1] * 8,
+      });
+    }
+
+    // All-time net gambling leader
+    const gambleNet = {};
+    allShots.forEach(s => {
+      if (['gamble_win', 'gamble_loss', 'parlay_add', 'parlay_remove'].includes(s.shot_type) || s.shot_type.startsWith('abraham_clinkin_')) {
+        gambleNet[s.player_name] = (gambleNet[s.player_name] || 0) + shotPointDelta(s);
+      }
+    });
+    const topGambler = Object.entries(gambleNet).sort((a, b) => b[1] - a[1])[0];
+    if (topGambler && topGambler[1] >= 20) {
+      candidates.push({
+        subject: topGambler[0],
+        headline: `${topGambler[0]} Is Up ${topGambler[1]} Points on Side Bets`,
+        blurb: `Gambles, parlays, and Abraham Clinkin' combined.`,
+        interest: Math.min(topGambler[1] / 2, 60),
+      });
+    }
+
+    // Biggest rivalry: pair who've played together most
+    const pairCounts = {};
+    allGames.forEach(g => {
+      const names = g.player_names || [];
+      for (let i = 0; i < names.length; i++) {
+        for (let j = i + 1; j < names.length; j++) {
+          const key = [names[i], names[j]].sort().join(" vs ");
+          pairCounts[key] = (pairCounts[key] || 0) + 1;
+        }
+      }
+    });
+    const topPairEntry = Object.entries(pairCounts).sort((a, b) => b[1] - a[1])[0];
+    if (topPairEntry && topPairEntry[1] >= 5) {
+      const [a, b] = topPairEntry[0].split(" vs ");
+      const aWins = allGames.filter(g => (g.player_names || []).includes(a) && (g.player_names || []).includes(b) && g.winner_name === a).length;
+      const bWins = allGames.filter(g => (g.player_names || []).includes(a) && (g.player_names || []).includes(b) && g.winner_name === b).length;
+      const leader = aWins >= bWins ? a : b;
+      const trailer = aWins >= bWins ? b : a;
+      candidates.push({
+        subject: leader,
+        headline: `${leader} Leads the ${a}-${b} Rivalry, ${Math.max(aWins, bWins)}-${Math.min(aWins, bWins)}`,
+        blurb: `${a} and ${b} have squared off ${topPairEntry[1]} times.`,
+        interest: topPairEntry[1] * 3,
+      });
+    }
+
+    // Select top trends, capping how many times one person can headline
+    const subjectCounts = {};
+    const trends = candidates
+      .sort((a, b) => b.interest - a.interest)
+      .filter(c => {
+        subjectCounts[c.subject] = (subjectCounts[c.subject] || 0) + 1;
+        return subjectCounts[c.subject] <= 2;
+      })
+      .slice(0, 6);
+
+    const byTheNumbers = {
+      totalGames: allGames.length,
+      totalPlayers: new Set(allResults.map(r => r.player_name)).size,
+      totalFatalities: allShots.filter(s => s.shot_type === 'death_roll' && s.result === 'ghost').length,
+    };
+
+    return { topStory, trends, byTheNumbers };
+  }, [allGames, allResults, allShots]);
+
   // Detect a Recent Game click: toggle it open/closed, and pull that game's
   // shot-by-shot data (cached after the first fetch) to feed the progress chart.
   const toggleGameExpand = async (game) => {
@@ -738,6 +930,65 @@ const StatsView = ({ onBack }) => {
               </select>
               <div className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[#ff8736] text-sm">▼</div>
             </div>
+
+            {activeTab === "headlines" && (
+              <div className="space-y-5">
+                {!headlines.topStory ? (
+                  <div className="text-center py-12 text-[#4fd8ac]">No games played yet — check back after the first one.</div>
+                ) : (
+                  <>
+                    {/* Masthead */}
+                    <div className="text-center border-b-4 border-[#ff8736] pb-3">
+                      <div className="text-3xl sm:text-4xl font-black tracking-tight text-white">THE NEW GAME + TIMES</div>
+                      <div className="flex items-center justify-between text-[11px] text-[#c9c6be] mt-1 uppercase tracking-wide">
+                        <span>{new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</span>
+                        <span>Est. with the first rack</span>
+                      </div>
+                    </div>
+
+                    {/* Top story */}
+                    <div className="border-b border-[#363849] pb-5">
+                      <div className="text-[#ff8736] text-xs font-black tracking-widest mb-1">{headlines.topStory.kicker}</div>
+                      <div className="text-2xl sm:text-3xl font-black leading-tight mb-2">{headlines.topStory.headline}</div>
+                      <div className="text-sm text-[#c9c6be] leading-relaxed">{headlines.topStory.body}</div>
+                    </div>
+
+                    {/* Trend headlines, newspaper-column style */}
+                    {headlines.trends.length > 0 && (
+                      <div>
+                        <div className="text-xs font-black tracking-widest text-[#05e5af] mb-3">AROUND THE LEAGUE</div>
+                        <div className="grid sm:grid-cols-2 gap-x-6 gap-y-4">
+                          {headlines.trends.map((t, i) => (
+                            <div key={i} className={`pb-3 ${i < headlines.trends.length - 1 ? 'border-b border-[#363849] sm:border-b-0' : ''} sm:border-r sm:border-[#363849] sm:pr-6 sm:last:border-r-0`}>
+                              <div className="font-black text-base leading-snug mb-1">{t.headline}</div>
+                              <div className="text-xs text-[#c9c6be]">{t.blurb}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* By the numbers */}
+                    {headlines.byTheNumbers && (
+                      <div className="bg-[#282a3b] rounded-lg p-3 flex justify-around text-center">
+                        <div>
+                          <div className="text-xl font-black text-[#05e5af]">{headlines.byTheNumbers.totalGames}</div>
+                          <div className="text-[10px] uppercase tracking-wide text-[#c9c6be]">Games Played</div>
+                        </div>
+                        <div>
+                          <div className="text-xl font-black text-[#05e5af]">{headlines.byTheNumbers.totalPlayers}</div>
+                          <div className="text-[10px] uppercase tracking-wide text-[#c9c6be]">Players</div>
+                        </div>
+                        <div>
+                          <div className="text-xl font-black text-[#05e5af]">{headlines.byTheNumbers.totalFatalities}</div>
+                          <div className="text-[10px] uppercase tracking-wide text-[#c9c6be]">Fatalities</div>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
 
             {activeTab === "leaderboard" && (
               <div className="space-y-3">
@@ -1305,17 +1556,45 @@ const styles = `
   .storyline-cold-2 { animation: coldPulse 1s ease-in-out infinite, crumbleShake 0.6s ease-in-out infinite; border: 2px solid #3a3f52; filter: saturate(0.6) brightness(0.9); }
 `;
 
+// ─── IN-PROGRESS GAME CACHE ─────────────────────────────────────────────────
+// A game in progress is mirrored to localStorage so an accidental refresh
+// doesn't wipe everyone's scores. It's temporary: it's cleared on reset or when
+// a new game starts, and ignored if it's older than the max age below.
+
+const GAME_CACHE_KEY = "ngp_active_game_v1";
+const GAME_CACHE_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
+
+const loadCachedGame = () => {
+  try {
+    const raw = localStorage.getItem(GAME_CACHE_KEY);
+    if (!raw) return null;
+    const { savedAt, state } = JSON.parse(raw);
+    if (!state || !state.gameStarted || Date.now() - savedAt > GAME_CACHE_MAX_AGE_MS) {
+      localStorage.removeItem(GAME_CACHE_KEY);
+      return null;
+    }
+    return state;
+  } catch {
+    return null; // storage unavailable or corrupted: just start fresh
+  }
+};
+
+const clearCachedGame = () => {
+  try { localStorage.removeItem(GAME_CACHE_KEY); } catch { /* ignore */ }
+};
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
 export default function NewGamePlusScorekeeper() {
-  const [numPlayers, setNumPlayers] = useState(null);
-  const [players, setPlayers] = useState([]);
-  const [currentPlayerIndex, setCurrentPlayerIndex] = useState(0);
-  const [targetBall, setTargetBall] = useState(1);
-  const [history, setHistory] = useState([]);
-  const [gameStarted, setGameStarted] = useState(false);
-  const [selectedPlayers, setSelectedPlayers] = useState([]);
-  const [gamblingPlayers, setGamblingPlayers] = useState([]);
+  const [cached] = useState(loadCachedGame); // restored once, on first load
+  const [numPlayers, setNumPlayers] = useState(cached?.numPlayers ?? null);
+  const [players, setPlayers] = useState(cached?.players ?? []);
+  const [currentPlayerIndex, setCurrentPlayerIndex] = useState(cached?.currentPlayerIndex ?? 0);
+  const [targetBall, setTargetBall] = useState(cached?.targetBall ?? 1);
+  const [history, setHistory] = useState(cached?.history ?? []);
+  const [gameStarted, setGameStarted] = useState(cached?.gameStarted ?? false);
+  const [selectedPlayers, setSelectedPlayers] = useState(cached?.selectedPlayers ?? []);
+  const [gamblingPlayers, setGamblingPlayers] = useState(cached?.gamblingPlayers ?? []);
   const [showDiceRoll, setShowDiceRoll] = useState(false);
   const [diceResult, setDiceResult] = useState(null);
   const [diceRolling, setDiceRolling] = useState(false);
@@ -1327,14 +1606,15 @@ export default function NewGamePlusScorekeeper() {
   const [showCoinFlip, setShowCoinFlip] = useState(false);
   const [coinResult, setCoinResult] = useState(null);
   const [coinFlipping, setCoinFlipping] = useState(false);
-  const [gameEndedEarly, setGameEndedEarly] = useState(false);
+  const [gameEndedEarly, setGameEndedEarly] = useState(cached?.gameEndedEarly ?? false);
   const [showEndGameConfirm, setShowEndGameConfirm] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showStats, setShowStats] = useState(false);
-  const [gameId, setGameId] = useState(null);
+  const [gameId, setGameId] = useState(cached?.gameId ?? null);
   const [savingGame, setSavingGame] = useState(false);
   const [saveError, setSaveError] = useState(null);
-  const [gameSaved, setGameSaved] = useState(false);
-  const [shotLog, setShotLog] = useState([]);
+  const [gameSaved, setGameSaved] = useState(cached?.gameSaved ?? false);
+  const [shotLog, setShotLog] = useState(cached?.shotLog ?? []);
   const [showManagePlayers, setShowManagePlayers] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(null);
 
@@ -1510,13 +1790,20 @@ export default function NewGamePlusScorekeeper() {
     setPlayers(newPlayers);
   };
 
+  // Abraham Clinkin' needs every *eligible* opponent gambling — inactive players
+  // (who left the game) don't count, so the rest of the table can still trigger it.
+  const everyoneEligibleIsGambling = (gamblers) => {
+    const eligible = players.map((_, i) => i).filter(i => i !== currentPlayerIndex && !players[i].isInactive);
+    return eligible.length > 0 && gamblers.length === eligible.length && eligible.every(i => gamblers.includes(i));
+  };
+
   const toggleGamble = (index) => {
     if (gamblingPlayers.includes(index)) {
       setGamblingPlayers(gamblingPlayers.filter(p => p !== index));
     } else {
       const next = [...gamblingPlayers, index];
       setGamblingPlayers(next);
-      if (next.length === numPlayers - 1 && next.every(idx => idx !== currentPlayerIndex)) playSirenSound();
+      if (everyoneEligibleIsGambling(next)) playSirenSound();
     }
   };
 
@@ -1644,31 +1931,66 @@ export default function NewGamePlusScorekeeper() {
     return playersArray;
   };
 
+  // ── Inactive players ───────────────────────────────────────────────────────
+  // An inactive player has left the game: they're skipped in the turn order
+  // (single, double, and Schrödinger taps all route through nextSeat) and lose
+  // 1 point for every turn they miss. Dead players are never charged.
+  const applyInactivePenalty = (playersArray, index) => {
+    if (playersArray[index].isDead) return;
+    playersArray[index].score -= 1;
+    logShot(playersArray[index].name, 'inactive_penalty', null, null, -1);
+  };
+
+  // Next seat after `from` that isn't inactive. Each inactive seat we pass over
+  // misses a turn (-1). If skipDead, dead seats are passed over too (for free).
+  const nextSeat = (playersArray, from, skipDead) => {
+    let idx = from;
+    for (let i = 0; i < playersArray.length; i++) {
+      idx = (idx + 1) % playersArray.length;
+      const p = playersArray[idx];
+      if (p.isInactive) { applyInactivePenalty(playersArray, idx); continue; }
+      if (skipDead && p.isDead) continue;
+      return idx;
+    }
+    return from;
+  };
+
   const doSingleTap = (snapshot) => {
     const newPlayers = applyPoisonTick([...snapshot], currentPlayerIndex);
     const checked = checkForResurrection(newPlayers);
-    setPlayers(checked);
-    let next = (currentPlayerIndex + 1) % numPlayers;
-    let safety = 0;
-    while (checked[next]?.isDead && next !== currentPlayerIndex && safety < numPlayers) {
-      next = (next + 1) % numPlayers; safety++;
-    }
+    const next = nextSeat(checked, currentPlayerIndex, true);
+    setPlayers(checkForResurrection(checked));
     setCurrentPlayerIndex(next);
   };
 
   const doDoubleTap = () => {
     // The skipped player's turn never happens, but poison still ticks for them —
     // otherwise being poisoned and skipped was a free pass from the damage.
-    const skippedIndex = (currentPlayerIndex + 1) % numPlayers;
-    const newPlayers = applyPoisonTick([...players], skippedIndex);
-    const checked = checkForResurrection(newPlayers);
-    setPlayers(checked);
-    let next = (currentPlayerIndex + 2) % numPlayers;
-    let safety = 0;
-    while (checked[next]?.isDead && next !== currentPlayerIndex && safety < numPlayers) {
-      next = (next + 1) % numPlayers; safety++;
-    }
+    // Inactive players are never the "skipped" player; they're just passed over.
+    const working = [...players];
+    const skippedIndex = nextSeat(working, currentPlayerIndex, false);
+    if (skippedIndex !== currentPlayerIndex) applyPoisonTick(working, skippedIndex);
+    const checked = checkForResurrection(working);
+    const next = nextSeat(checked, skippedIndex, true);
+    setPlayers(checkForResurrection(checked));
     setCurrentPlayerIndex(next);
+  };
+
+  // Mark a player inactive (they left) or active again (they're back).
+  const toggleInactive = (index) => {
+    setHistory(h => [...h, saveState()]);
+    const newPlayers = [...players];
+    const goingInactive = !newPlayers[index].isInactive;
+    newPlayers[index].isInactive = goingInactive;
+    if (goingInactive) {
+      setGamblingPlayers(prev => prev.filter(i => i !== index));
+      if (index === currentPlayerIndex) {
+        // They left mid-turn: pass play along right away (no penalty for this turn).
+        const next = nextSeat(newPlayers, currentPlayerIndex, true);
+        setCurrentPlayerIndex(next);
+      }
+    }
+    setPlayers(newPlayers);
   };
 
   const endTurn = () => {
@@ -1730,6 +2052,8 @@ export default function NewGamePlusScorekeeper() {
   };
 
   const resetGame = () => {
+    clearCachedGame();
+    setShowResetConfirm(false);
     setGameStarted(false); setNumPlayers(null); setPlayers([]);
     setCurrentPlayerIndex(0); setTargetBall(1); setHistory([]);
     setSelectedPlayers([]); setGamblingPlayers([]);
@@ -1739,7 +2063,7 @@ export default function NewGamePlusScorekeeper() {
 
   const addPlayer = (name) => {
     const lowestScore = players.length > 0 ? Math.min(...players.map(p => p.score)) : 0;
-    const newPlayer = { id: Date.now(), name, score: lowestScore, isPoisoned: false, poisonLevel: 0, isDead: false };
+    const newPlayer = { id: Date.now(), name, score: lowestScore, isPoisoned: false, poisonLevel: 0, isDead: false, isInactive: false };
     const newPlayers = [...players, newPlayer];
     setPlayers(newPlayers);
     setNumPlayers(newPlayers.length);
@@ -1803,9 +2127,7 @@ export default function NewGamePlusScorekeeper() {
   const winner = (targetBall > 15 || gameEndedEarly) && players.length > 0
     ? players.reduce((max, p) => p.score > max.score ? p : max, players[0])
     : null;
-  const isAbrahamClinkin = !winner && players.length > 0 &&
-    gamblingPlayers.length === numPlayers - 1 &&
-    gamblingPlayers.every(idx => idx !== currentPlayerIndex);
+  const isAbrahamClinkin = !winner && players.length > 0 && everyoneEligibleIsGambling(gamblingPlayers);
 
   // ── Storylines ───────────────────────────────────────────────────────────
   // Live, in-game momentum per player, derived from this game's own shotLog —
@@ -1820,6 +2142,7 @@ export default function NewGamePlusScorekeeper() {
       let hotStreak = 0;
       let coldStreak = 0;
       for (let i = myShots.length - 1; i >= 0; i--) {
+        if (myShots[i].shot_type === 'inactive_penalty') continue; // not a performance signal
         const delta = myShots[i].point_delta ?? 0;
         if (delta > 0) {
           if (coldStreak > 0) break;
@@ -1840,6 +2163,21 @@ export default function NewGamePlusScorekeeper() {
     });
     return storylines;
   }, [shotLog, players]);
+
+  // Mirror the in-progress game to localStorage so a refresh doesn't lose it.
+  useEffect(() => {
+    if (!gameStarted) { clearCachedGame(); return; }
+    try {
+      localStorage.setItem(GAME_CACHE_KEY, JSON.stringify({
+        savedAt: Date.now(),
+        state: {
+          numPlayers, players, currentPlayerIndex, targetBall, history, gameStarted,
+          selectedPlayers, gamblingPlayers, gameEndedEarly, gameId, gameSaved, shotLog,
+        },
+      }));
+    } catch { /* storage full or unavailable: caching is best-effort */ }
+  }, [numPlayers, players, currentPlayerIndex, targetBall, history, gameStarted,
+      selectedPlayers, gamblingPlayers, gameEndedEarly, gameId, gameSaved, shotLog]);
 
   // Auto-save when winner is determined
   useEffect(() => {
@@ -1973,6 +2311,21 @@ export default function NewGamePlusScorekeeper() {
           </div>
         )}
 
+        {/* Reset Confirmation Modal */}
+        {showResetConfirm && (
+          <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
+            <div className="bg-gray-900 border-2 border-red-500 p-8 rounded-2xl text-center max-w-sm w-full mx-4 shadow-2xl">
+              <div className="text-4xl mb-3">⚠️</div>
+              <h2 className="text-2xl font-bold mb-2">Are you sure?</h2>
+              <p className="text-gray-300 mb-6">Resetting will wipe the current game and everyone's scores.</p>
+              <div className="grid grid-cols-2 gap-3">
+                <button onClick={() => setShowResetConfirm(false)} className="bg-gray-700 hover:bg-gray-600 p-3 rounded-lg font-semibold">Cancel</button>
+                <button onClick={resetGame} className="bg-red-600 hover:bg-red-500 p-3 rounded-lg font-bold">Reset</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* End Game Early Confirmation Modal */}
         {showEndGameConfirm && (
           <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
@@ -2020,8 +2373,14 @@ export default function NewGamePlusScorekeeper() {
                         <span className="font-semibold">{player.name}</span>
                         <span className="text-[#c9c6be] text-sm ml-2">{player.score} pts</span>
                         {player.isDead && <span className="text-red-400 text-xs ml-2">💀</span>}
+                        {player.isInactive && <span className="text-[#c9c6be] text-xs ml-2">💤 Inactive</span>}
                       </div>
                       <div className="flex gap-2 items-center">
+                        <button onClick={() => toggleInactive(index)}
+                          title={player.isInactive ? "Mark as back in the game" : "Mark as left the game (-1 pt per missed turn)"}
+                          className={`text-xs px-2 py-1 rounded font-bold ${player.isInactive ? 'bg-[#05e5af] text-[#14151d]' : 'bg-[#4b4e63] hover:bg-[#63667d] text-white'}`}>
+                          {player.isInactive ? "Reactivate" : "💤 Inactive"}
+                        </button>
                         {!player.isDead && (
                           <button onClick={() => manualKillPlayer(index)}
                             title="Kill player on command"
@@ -2074,7 +2433,7 @@ export default function NewGamePlusScorekeeper() {
             {!winner && <button onClick={() => { setShowManagePlayers(true); setConfirmRemove(null); }} className="p-2 bg-[#4b4e63] hover:bg-[#63667d] rounded-lg text-sm font-bold">👥</button>}
             <button onClick={undo} disabled={history.length === 0} className="p-2 bg-yellow-600 rounded-lg disabled:opacity-50 text-sm font-bold">↩ Undo</button>
             {!winner && <button onClick={() => setShowEndGameConfirm(true)} className="p-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-bold">⏱️ End</button>}
-            <button onClick={resetGame} className="p-2 bg-red-600 rounded-lg text-sm font-bold">↺ Reset</button>
+            <button onClick={() => setShowResetConfirm(true)} className="p-2 bg-red-600 rounded-lg text-sm font-bold">↺ Reset</button>
           </div>
         </div>
 
@@ -2135,18 +2494,19 @@ export default function NewGamePlusScorekeeper() {
             return (
             <div key={player.id} className={`p-3 rounded-lg ${
               player.isDead ? 'bg-gray-800 opacity-60' :
+              player.isInactive ? 'bg-gray-800 opacity-50 grayscale' :
               index === currentPlayerIndex && !winner ? 'bg-yellow-500 text-black ring-4 ring-yellow-300' : 'bg-[#282a3b]'
-            } ${gamblingPlayers.includes(index) ? 'ring-4 ring-green-400' : ''} ${player.isDead ? '' : storylineClass}`}>
+            } ${gamblingPlayers.includes(index) ? 'ring-4 ring-green-400' : ''} ${player.isDead || player.isInactive ? '' : storylineClass}`}>
               <div className="flex items-center justify-between mb-1">
                 <input type="text" value={player.name} onChange={(e) => updatePlayerName(index, e.target.value)}
-                  className="bg-transparent font-semibold w-full outline-none text-sm" disabled={player.isDead} />
+                  className="bg-transparent font-semibold w-full outline-none text-sm" disabled={player.isDead || player.isInactive} />
                 <div className="flex gap-1 ml-2">
-                  <button onClick={() => togglePoison(index)} disabled={player.isDead}
+                  <button onClick={() => togglePoison(index)} disabled={player.isDead || player.isInactive}
                     className={`px-2 py-1 rounded text-xs font-bold ${(player.poisonLevel || 0) === 2 ? 'bg-[#4b4e63] text-white' : player.isPoisoned ? 'bg-red-600 text-white' : 'bg-gray-600 text-white'} disabled:opacity-30`}>
                     {(player.poisonLevel || 0) === 2 ? '☠️☠️' : '☠️'}
                   </button>
-                  <button onClick={() => toggleGamble(index)} disabled={index === currentPlayerIndex || player.isDead}
-                    className={`px-2 py-1 rounded text-xs font-bold ${gamblingPlayers.includes(index) ? 'bg-green-600 text-white' : index === currentPlayerIndex || player.isDead ? 'bg-gray-400 text-gray-600 cursor-not-allowed' : 'bg-gray-600 text-white'}`}>
+                  <button onClick={() => toggleGamble(index)} disabled={index === currentPlayerIndex || player.isDead || player.isInactive}
+                    className={`px-2 py-1 rounded text-xs font-bold ${gamblingPlayers.includes(index) ? 'bg-green-600 text-white' : index === currentPlayerIndex || player.isDead || player.isInactive ? 'bg-gray-400 text-gray-600 cursor-not-allowed' : 'bg-gray-600 text-white'}`}>
                     🎲
                   </button>
                 </div>
@@ -2163,7 +2523,7 @@ export default function NewGamePlusScorekeeper() {
                 <div onClick={() => setEditingScore(index)} className="text-3xl font-bold cursor-pointer hover:opacity-80" title="Click to edit">{player.score}</div>
               )}
 
-              {storyline && !player.isDead && (
+              {storyline && !player.isDead && !player.isInactive && (
                 <div className={`text-[11px] font-black mt-0.5 ${storyline.kind === 'hot' ? 'text-[#ff8736]' : 'text-[#9fb4d1]'}`}>
                   {storyline.label}
                 </div>
@@ -2179,6 +2539,7 @@ export default function NewGamePlusScorekeeper() {
                     </button>
                   </>
                 )}
+                {player.isInactive && !player.isDead && <div className="font-semibold text-[#c9c6be]">💤 INACTIVE</div>}
                 {player.poisonLevel === 2 && !player.isDead && <div className="font-semibold text-[#4fd8ac]">DOUBLE POISON</div>}
                 {player.poisonLevel === 1 && !player.isDead && <div className="font-semibold text-red-400">POISONED</div>}
                 {gamblingPlayers.includes(index) && !player.isDead && <div className="font-semibold text-green-400">GAMBLING</div>}
