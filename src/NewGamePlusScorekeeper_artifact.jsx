@@ -248,6 +248,9 @@ const shotDescription = (shot) => {
     case "death_reset": return "score reset (Death Roll / resurrection)";
     case "poison_tick": return `poison tick (level ${n})`;
     case "triple_tap": return "Triple Tap (score flipped)";
+    case "player_joined": return `joined the game at ${shot.point_delta} pts`;
+    case "ghost_revival": return "came back from the dead (passed a living player)";
+    case "ghost_death": return `became a ghost — passed by ${shot.result ?? "a ghost"}`;
     case "inactive_penalty": return "missed a turn while inactive (-1)";
     case "manual_adjustment": return `manual score adjustment (${shot.point_delta > 0 ? "+" : ""}${shot.point_delta})`;
     case "abraham_clinkin_made": return `Abraham Clinkin' — made it`;
@@ -255,6 +258,23 @@ const shotDescription = (shot) => {
     case "abraham_clinkin_scratch": return `Abraham Clinkin' — scratched`;
     default: return shot.shot_type.replace(/_/g, " ");
   }
+};
+
+// Ghost assists: a scratch row can carry ghost_assists (names of lit ghosts credited
+// with causing it). Purely historical — never touches scores.
+const tallyGhostAssists = (shots) => {
+  const tally = {};
+  shots.forEach((s) => {
+    if ((s.shot_type !== "scratch" && s.shot_type !== "scratch_pocket") || !Array.isArray(s.ghost_assists)) return;
+    const pts = Math.abs(shotPointDelta(s));
+    s.ghost_assists.forEach((ghost) => {
+      const t = tally[ghost] || (tally[ghost] = { scratches: 0, points: 0, victims: {}, gameIds: new Set() });
+      t.scratches++; t.points += pts;
+      t.victims[s.player_name] = (t.victims[s.player_name] || 0) + 1;
+      t.gameIds.add(s.game_id);
+    });
+  });
+  return tally;
 };
 
 // Turns a flat, id-ordered shot log into cumulative-score rows suitable for a
@@ -383,6 +403,16 @@ const StatsView = ({ onBack }) => {
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState("headlines");
   const [selectedSeason, setSelectedSeason] = useState(getCurrentQuarterKey());
+  const [statMode, setStatMode] = useState("total"); // "total" | "avg"
+  const isAvg = statMode === "avg";
+  // Totals pass through; per-game divides by the games that player played in the selected season.
+  const per = (n, games) => {
+    if (!isAvg) return n;
+    if (!games) return 0;
+    const v = n / games;
+    return Number.isInteger(v) ? v : Number(v.toFixed(2));
+  };
+  const signed = (n) => `${n > 0 ? "+" : ""}${n}`;
 
   // Recent Games → per-game shot-by-shot chart
   const [expandedGameId, setExpandedGameId] = useState(null);
@@ -535,9 +565,19 @@ const StatsView = ({ onBack }) => {
   }, [allResults, allShots, allGames, filteredGameIds]);
 
   const gamblingStats = useMemo(
-    () => [...stats].sort((a, b) => b.netGamblingPoints - a.netGamblingPoints),
-    [stats]
+    () => stats.map(p => ({ ...p, netDisplay: per(p.netGamblingPoints, p.games) })).sort((a, b) => b.netDisplay - a.netDisplay),
+    [stats, statMode]
   );
+
+  const ghostStats = useMemo(() => {
+    const tally = tallyGhostAssists(allShots.filter(s => filteredGameIds.has(s.game_id)));
+    const gamesBy = Object.fromEntries(stats.map(p => [p.name, p.games]));
+    return Object.entries(tally).map(([name, t]) => {
+      const top = Object.entries(t.victims).sort((a, b) => b[1] - a[1])[0];
+      return { name, scratches: t.scratches, points: t.points, gamesHaunted: t.gameIds.size,
+        games: gamesBy[name] ?? 0, topVictim: top ? top[0] : null, topVictimCount: top ? top[1] : 0 };
+    }).sort((a, b) => per(b.points, b.games) - per(a.points, a.games) || b.scratches - a.scratches);
+  }, [allShots, filteredGameIds, stats, statMode]);
 
   const [expandedGamblingPlayer, setExpandedGamblingPlayer] = useState(null);
 
@@ -562,7 +602,7 @@ const StatsView = ({ onBack }) => {
     return { rows, playerNames };
   }, [games, stats]);
 
-  const tabs = ["headlines", "leaderboard", "per-player", "gambling", "playoffs", "recent games"];
+  const tabs = ["headlines", "leaderboard", "per-player", "gambling", "ghosts", "playoffs", "recent games"];
   const isCurrentSeason = selectedSeason === getCurrentQuarterKey();
 
   // Projected playoff bracket: seeded on total wins from Jan 1 through
@@ -940,6 +980,18 @@ const StatsView = ({ onBack }) => {
               <div className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[#ff8736] text-sm">▼</div>
             </div>
 
+            {["leaderboard", "per-player", "gambling", "ghosts"].includes(activeTab) && (
+              <div className="flex items-center gap-2 mb-4">
+                {[["total", "Totals"], ["avg", "Per game"]].map(([k, label]) => (
+                  <button key={k} onClick={() => setStatMode(k)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-bold ${statMode === k ? 'bg-[#05e5af] text-[#14151d]' : 'bg-[#282a3b] text-[#c9c6be] hover:text-white'}`}>
+                    {label}
+                  </button>
+                ))}
+                {isAvg && <span className="text-xs text-[#4fd8ac]">÷ games played in {selectedSeason}</span>}
+              </div>
+            )}
+
             {activeTab === "headlines" && (
               <div className="space-y-5">
                 {!headlines.topStory ? (
@@ -1048,9 +1100,9 @@ const StatsView = ({ onBack }) => {
                       </div>
                     </div>
                     <div className="grid grid-cols-4 gap-2">
-                      <StatCard label="Avg Score" value={p.avgScore} color={i === 0 ? "yellow" : "purple"} />
+                      <StatCard label={isAvg ? "Avg Score" : "Total Score"} value={isAvg ? p.avgScore : p.totalScore} color={i === 0 ? "yellow" : "purple"} />
                       <StatCard label="Best Game" value={p.bestScore === -Infinity ? "—" : p.bestScore} color={i === 0 ? "yellow" : "purple"} />
-                      <StatCard label="Balls Pocketed" value={p.totalBallsPocketed} color={i === 0 ? "yellow" : "purple"} />
+                      <StatCard label="Balls Pocketed" value={per(p.totalBallsPocketed, p.games)} sub={isAvg ? "per game" : undefined} color={i === 0 ? "yellow" : "purple"} />
                       <StatCard label="Avg Placement" value={p.avgPlacement ? `#${p.avgPlacement}` : "—"} color={i === 0 ? "yellow" : "purple"} />
                     </div>
                   </div>
@@ -1070,15 +1122,15 @@ const StatsView = ({ onBack }) => {
                       <StatCard label="Win Rate" value={`${p.winRate}%`} color="green" />
                     </div>
                     <div className="grid grid-cols-3 gap-2 mb-2">
-                      <StatCard label="Avg Score" value={p.avgScore} color="purple" />
+                      <StatCard label={isAvg ? "Avg Score" : "Total Score"} value={isAvg ? p.avgScore : p.totalScore} color="purple" />
                       <StatCard label="Best Score" value={p.bestScore === -Infinity ? "—" : p.bestScore} color="yellow" />
                       <StatCard label="Avg Place" value={p.avgPlacement ? `#${p.avgPlacement}` : "—"} color="purple" />
                     </div>
                     <div className="grid grid-cols-4 gap-2">
-                      <StatCard label="Balls In" value={p.totalBallsPocketed} color="green" />
-                      <StatCard label="Ricochets" value={p.totalRicochets} color="blue" />
-                      <StatCard label="Scratches" value={p.totalScratches} color="red" />
-                      <StatCard label="Deaths" value={p.totalDeaths} sub={`${p.totalDeathRolls} rolls`} color="red" />
+                      <StatCard label="Balls In" value={per(p.totalBallsPocketed, p.games)} color="green" />
+                      <StatCard label="Ricochets" value={per(p.totalRicochets, p.games)} color="blue" />
+                      <StatCard label="Scratches" value={per(p.totalScratches, p.games)} color="red" />
+                      <StatCard label="Deaths" value={per(p.totalDeaths, p.games)} sub={`${per(p.totalDeathRolls, p.games)} rolls`} color="red" />
                     </div>
                   </div>
                 ))}
@@ -1104,9 +1156,9 @@ const StatsView = ({ onBack }) => {
                             contentStyle={{ background: "#1d1f2c", border: "1px solid #4b4e63", fontSize: 12 }}
                             labelStyle={{ color: "#f3efe8" }}
                           />
-                          <Bar dataKey="netGamblingPoints" name="Net gambling pts" radius={[0, 4, 4, 0]}>
+                          <Bar dataKey="netDisplay" name={isAvg ? "Net gambling pts / game" : "Net gambling pts"} radius={[0, 4, 4, 0]}>
                             {gamblingStats.map((p) => (
-                              <Cell key={p.name} fill={p.netGamblingPoints >= 0 ? "#05e5af" : "#f87171"} />
+                              <Cell key={p.name} fill={p.netDisplay >= 0 ? "#05e5af" : "#f87171"} />
                             ))}
                           </Bar>
                         </BarChart>
@@ -1130,26 +1182,26 @@ const StatsView = ({ onBack }) => {
                           {p.name}
                         </div>
                         <div className={`text-2xl font-black ${p.netGamblingPoints > 0 ? "text-green-400" : p.netGamblingPoints < 0 ? "text-red-400" : "text-[#c9c6be]"}`}>
-                          {p.netGamblingPoints > 0 ? "+" : ""}{p.netGamblingPoints} pts
+                          {signed(p.netDisplay)} pts{isAvg ? "/game" : ""}
                         </div>
                       </div>
                       <div className="grid grid-cols-3 gap-2">
                         <StatCard
                           label="Gambles"
-                          value={`${p.gambleWins}-${p.gambleLosses}`}
+                          value={`${per(p.gambleWins, p.games)}-${per(p.gambleLosses, p.games)}`}
                           sub={p.gambleWinRate !== null ? `${p.gambleWinRate}% win` : "—"}
                           color="blue"
                         />
                         <StatCard
                           label="Parlay Net"
-                          value={`${p.parlayNet > 0 ? "+" : ""}${p.parlayNet}`}
-                          sub={`${p.parlayAttempts} attempt${p.parlayAttempts !== 1 ? "s" : ""}`}
+                          value={signed(per(p.parlayNet, p.games))}
+                          sub={`${per(p.parlayAttempts, p.games)} attempt${isAvg || p.parlayAttempts !== 1 ? "s" : ""}${isAvg ? "/game" : ""}`}
                           color={p.parlayNet >= 0 ? "green" : "red"}
                         />
                         <StatCard
                           label="Abraham Net"
-                          value={`${p.abrahamNet > 0 ? "+" : ""}${p.abrahamNet}`}
-                          sub={`${p.abrahamShooterCount} shot / ${p.abrahamGamblerCount} bet`}
+                          value={signed(per(p.abrahamNet, p.games))}
+                          sub={`${per(p.abrahamShooterCount, p.games)} shot / ${per(p.abrahamGamblerCount, p.games)} bet${isAvg ? " per game" : ""}`}
                           color={p.abrahamNet >= 0 ? "green" : "red"}
                         />
                       </div>
@@ -1161,9 +1213,9 @@ const StatsView = ({ onBack }) => {
                         <div>
                           <div className="text-sm font-bold text-[#f3efe8] mb-2">🎯 Parlay Breakdown</div>
                           <div className="grid grid-cols-3 gap-2 mb-2">
-                            <StatCard label="Attempts" value={p.parlayAttempts} color="purple" />
-                            <StatCard label="Hit" value={p.parlayWins} color="green" />
-                            <StatCard label="Missed" value={p.parlayLosses} color="red" />
+                            <StatCard label="Attempts" value={per(p.parlayAttempts, p.games)} color="purple" />
+                            <StatCard label="Hit" value={per(p.parlayWins, p.games)} color="green" />
+                            <StatCard label="Missed" value={per(p.parlayLosses, p.games)} color="red" />
                           </div>
                           {Object.keys(p.parlayByType).length > 0 ? (
                             <div className="space-y-1">
@@ -1173,9 +1225,9 @@ const StatsView = ({ onBack }) => {
                                   <div key={type} className="flex items-center justify-between bg-[#1d1f2c] rounded-lg px-3 py-2 text-sm">
                                     <span className="font-semibold">{type}-pt Parlay</span>
                                     <span>
-                                      <span className="text-green-400 font-bold">{rec.wins}W</span>
+                                      <span className="text-green-400 font-bold">{per(rec.wins, p.games)}W</span>
                                       {" – "}
-                                      <span className="text-red-400 font-bold">{rec.losses}L</span>
+                                      <span className="text-red-400 font-bold">{per(rec.losses, p.games)}L</span>
                                     </span>
                                   </div>
                                 ))}
@@ -1192,27 +1244,51 @@ const StatsView = ({ onBack }) => {
                             <div className="bg-[#1d1f2c] rounded-lg p-3">
                               <div className="text-xs uppercase tracking-wide text-[#c9c6be] mb-2">As Shooter</div>
                               <div className="text-sm space-y-1">
-                                <div className="flex justify-between"><span>Attempts</span><span className="font-bold">{p.abrahamShooterAttempts}</span></div>
-                                <div className="flex justify-between"><span className="text-yellow-300">Made it</span><span className="font-bold text-yellow-300">{p.abrahamShooterMade}</span></div>
-                                <div className="flex justify-between"><span className="text-orange-300">No-Scratch</span><span className="font-bold text-orange-300">{p.abrahamShooterNoScratch}</span></div>
-                                <div className="flex justify-between"><span className="text-red-400">Scratched</span><span className="font-bold text-red-400">{p.abrahamShooterScratched}</span></div>
+                                <div className="flex justify-between"><span>Attempts</span><span className="font-bold">{per(p.abrahamShooterAttempts, p.games)}</span></div>
+                                <div className="flex justify-between"><span className="text-yellow-300">Made it</span><span className="font-bold text-yellow-300">{per(p.abrahamShooterMade, p.games)}</span></div>
+                                <div className="flex justify-between"><span className="text-orange-300">No-Scratch</span><span className="font-bold text-orange-300">{per(p.abrahamShooterNoScratch, p.games)}</span></div>
+                                <div className="flex justify-between"><span className="text-red-400">Scratched</span><span className="font-bold text-red-400">{per(p.abrahamShooterScratched, p.games)}</span></div>
                               </div>
                             </div>
                             <div className="bg-[#1d1f2c] rounded-lg p-3">
                               <div className="text-xs uppercase tracking-wide text-[#c9c6be] mb-2">As Gambler</div>
                               <div className="text-sm space-y-1">
-                                <div className="flex justify-between"><span>Bets</span><span className="font-bold">{p.abrahamGamblerAttempts}</span></div>
-                                <div className="flex justify-between"><span className="text-green-400">Won</span><span className="font-bold text-green-400">{p.abrahamGamblerWon}</span></div>
-                                <div className="flex justify-between"><span className="text-red-400">Lost</span><span className="font-bold text-red-400">{p.abrahamGamblerLost}</span></div>
+                                <div className="flex justify-between"><span>Bets</span><span className="font-bold">{per(p.abrahamGamblerAttempts, p.games)}</span></div>
+                                <div className="flex justify-between"><span className="text-green-400">Won</span><span className="font-bold text-green-400">{per(p.abrahamGamblerWon, p.games)}</span></div>
+                                <div className="flex justify-between"><span className="text-red-400">Lost</span><span className="font-bold text-red-400">{per(p.abrahamGamblerLost, p.games)}</span></div>
                               </div>
                             </div>
                           </div>
                           <div className="text-xs text-[#4fd8ac] mt-2">
-                            Made the ball on a Clinkin' {p.abrahamShooterMade} time{p.abrahamShooterMade !== 1 ? "s" : ""}.
+                            Made the ball on a Clinkin' {per(p.abrahamShooterMade, p.games)} time{isAvg || p.abrahamShooterMade !== 1 ? "s" : ""}{isAvg ? " per game" : ""}.
                           </div>
                         </div>
                       </div>
                     )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {activeTab === "ghosts" && (
+              <div className="space-y-4">
+                <div className="bg-[#1a1230] border border-purple-500 rounded-lg p-3 text-sm text-purple-200">
+                  👻 Scratches a dead player was credited with causing, ranked by scratch points caused{isAvg ? " per game played" : ""}.
+                </div>
+                {ghostStats.length === 0 && (
+                  <div className="text-center py-12 text-[#4fd8ac]">No ghost assists in {selectedSeason} yet. Light a ghost's 👻 on their card before applying scratch points.</div>
+                )}
+                {ghostStats.map((g, i) => (
+                  <div key={g.name} className={`rounded-xl p-4 ${i === 0 ? 'bg-[#2b1a4d] ring-2 ring-purple-400' : 'bg-[#282a3b]'}`}>
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="text-xl font-black">{i === 0 ? '👻' : `#${i + 1}`} {g.name}</div>
+                      <div className="text-2xl font-black text-purple-300">{per(g.points, g.games)} pts{isAvg ? "/game" : ""}</div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <StatCard label="Scratches Caused" value={per(g.scratches, g.games)} color="purple" />
+                      <StatCard label="Games Haunting" value={per(g.gamesHaunted, g.games)} color="purple" />
+                      <StatCard label="Top Victim" value={g.topVictim ?? "—"} sub={g.topVictim ? `${g.topVictimCount}×` : undefined} color="purple" />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1627,6 +1703,10 @@ export default function NewGamePlusScorekeeper() {
   const [shotLog, setShotLog] = useState(cached?.shotLog ?? []);
   const [showManagePlayers, setShowManagePlayers] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(null);
+  const [litGhostIds, setLitGhostIds] = useState(cached?.litGhostIds ?? []);
+  const [showShotLog, setShowShotLog] = useState(false);
+  const [logFilter, setLogFilter] = useState("all");
+  const [saveWarning, setSaveWarning] = useState(null);
 
   const availablePlayers = [
     'Ryan', 'Joe', 'Gabby', 'Chase', 'Carlos', 'Spencer',
@@ -1635,8 +1715,12 @@ export default function NewGamePlusScorekeeper() {
 
   // point_delta is the *actual* score change caused by this event — the source of
   // truth for the progress chart, instead of re-deriving it from shot_type later.
-  const logShot = useCallback((playerName, shotType, ballNumber = null, result = null, pointDelta = 0) => {
-    setShotLog(prev => [...prev, { player_name: playerName, shot_type: shotType, ball_number: ballNumber, result, point_delta: pointDelta }]);
+  const logShot = useCallback((playerName, shotType, ballNumber = null, result = null, pointDelta = 0, ghostAssists = null) => {
+    setShotLog(prev => [...prev, {
+      player_name: playerName, shot_type: shotType, ball_number: ballNumber, result, point_delta: pointDelta,
+      // only present when a lit ghost is credited, so saves work even before the column exists
+      ...(ghostAssists && ghostAssists.length ? { ghost_assists: ghostAssists } : {}),
+    }]);
   }, []);
 
   const togglePlayerSelection = (playerName) => {
@@ -1744,26 +1828,24 @@ export default function NewGamePlusScorekeeper() {
     setPlayers(newPlayers);
   };
 
+  // A ghost that ends up above any living player comes back; the worst living player
+  // below it (everyone tied for worst) becomes a ghost at their CURRENT score. Only a
+  // Death Roll / manual kill (killPlayer) drops someone 10 below.
   const checkForResurrection = (currentPlayers) => {
     const newPlayers = [...currentPlayers];
     let changed = false;
-    newPlayers.forEach((player, idx) => {
-      if (player.isDead) {
-        const alivePlayersBelow = newPlayers.filter((p, i) => i !== idx && !p.isDead && p.score < player.score);
-        if (alivePlayersBelow.length > 0) {
-          const lowestAlive = alivePlayersBelow.reduce((min, p) => p.score < min.score ? p : min);
-          const lowestAliveIndex = newPlayers.findIndex(p => p === lowestAlive);
-          const oldScore = newPlayers[lowestAliveIndex].score;
-          player.isDead = false;
-          newPlayers[lowestAliveIndex].isDead = true;
-          newPlayers[lowestAliveIndex].score = player.score - 10;
-          const delta = newPlayers[lowestAliveIndex].score - oldScore;
-          if (delta !== 0) {
-            logShot(newPlayers[lowestAliveIndex].name, 'death_reset', null, null, delta);
-          }
-          changed = true;
-        }
-      }
+    newPlayers.forEach((ghost) => {
+      if (!ghost.isDead) return;
+      const below = newPlayers.filter(p => p !== ghost && !p.isDead && p.score < ghost.score);
+      if (below.length === 0) return;
+      const worst = Math.min(...below.map(p => p.score));
+      ghost.isDead = false;
+      logShot(ghost.name, 'ghost_revival', null, null, 0);
+      below.filter(p => p.score === worst).forEach(p => {
+        p.isDead = true;
+        logShot(p.name, 'ghost_death', null, ghost.name, 0);
+      });
+      changed = true;
     });
     return changed ? newPlayers : currentPlayers;
   };
@@ -1771,7 +1853,8 @@ export default function NewGamePlusScorekeeper() {
   const saveState = () => ({
     players: JSON.parse(JSON.stringify(players)),
     currentPlayerIndex,
-    targetBall
+    targetBall,
+    shotLogLength: shotLog.length
   });
 
   const updatePlayerName = (index, name) => {
@@ -1852,9 +1935,16 @@ export default function NewGamePlusScorekeeper() {
     setTargetBall(t => t === 15 ? 16 : t + 1);
   };
 
+  // Lit ghosts (dead players with the 👻 on) get credited on this scratch, then reset.
+  const takeGhostAssists = () => {
+    const names = players.filter(p => p.isDead && litGhostIds.includes(p.id)).map(p => p.name);
+    setLitGhostIds([]);
+    return names;
+  };
+
   const scratchOnBall = (ballNumber) => {
     setHistory(h => [...h, saveState()]);
-    logShot(players[currentPlayerIndex].name, 'scratch', ballNumber, null, -ballNumber);
+    logShot(players[currentPlayerIndex].name, 'scratch', ballNumber, null, -ballNumber, takeGhostAssists());
     const newPlayers = [...players];
     newPlayers[currentPlayerIndex].score -= ballNumber;
     setPlayers(checkForResurrection(newPlayers));
@@ -1863,7 +1953,7 @@ export default function NewGamePlusScorekeeper() {
 
   const scratchBallAndPocket = (ballNumber) => {
     setHistory(h => [...h, saveState()]);
-    logShot(players[currentPlayerIndex].name, 'scratch_pocket', ballNumber, null, -(ballNumber + 3));
+    logShot(players[currentPlayerIndex].name, 'scratch_pocket', ballNumber, null, -(ballNumber + 3), takeGhostAssists());
     const newPlayers = [...players];
     newPlayers[currentPlayerIndex].score -= (ballNumber + 3);
     setPlayers(checkForResurrection(newPlayers));
@@ -1971,6 +2061,7 @@ export default function NewGamePlusScorekeeper() {
     const next = nextSeat(checked, currentPlayerIndex, true);
     setPlayers(checkForResurrection(checked));
     setCurrentPlayerIndex(next);
+    setLitGhostIds([]);
   };
 
   const doDoubleTap = () => {
@@ -1984,6 +2075,7 @@ export default function NewGamePlusScorekeeper() {
     const next = nextSeat(checked, skippedIndex, true);
     setPlayers(checkForResurrection(checked));
     setCurrentPlayerIndex(next);
+    setLitGhostIds([]);
   };
 
   // Mark a player inactive (they left) or active again (they're back).
@@ -2042,7 +2134,7 @@ export default function NewGamePlusScorekeeper() {
       setTimeout(() => {
         setShowCoinFlip(false);
         setCoinResult(null);
-        setHistory(h => [...h, { players: snapshot, currentPlayerIndex: snapIndex, targetBall }]);
+        setHistory(h => [...h, { players: snapshot, currentPlayerIndex: snapIndex, targetBall, shotLogLength: shotLog.length }]);
         if (result === 'single') {
           doSingleTap(snapshot);
         } else {
@@ -2058,6 +2150,9 @@ export default function NewGamePlusScorekeeper() {
     setPlayers(last.players);
     setCurrentPlayerIndex(last.currentPlayerIndex);
     setTargetBall(last.targetBall);
+    // drop the log rows the undone action created so the log matches the scores
+    if (last.shotLogLength !== undefined) setShotLog(prev => prev.slice(0, last.shotLogLength));
+    setLitGhostIds([]);
     setHistory(history.slice(0, -1));
   };
 
@@ -2069,11 +2164,13 @@ export default function NewGamePlusScorekeeper() {
     setSelectedPlayers([]); setGamblingPlayers([]);
     setGameEndedEarly(false); setShowEndGameConfirm(false);
     setShotLog([]); setGameId(null); setGameSaved(false); setSaveError(null);
+    setLitGhostIds([]); setSaveWarning(null);
   };
 
   const addPlayer = (name) => {
     const lowestScore = players.length > 0 ? Math.min(...players.map(p => p.score)) : 0;
     const newPlayer = { id: Date.now(), name, score: lowestScore, isPoisoned: false, poisonLevel: 0, isDead: false, isInactive: false };
+    if (lowestScore !== 0) logShot(name, 'player_joined', null, null, lowestScore);
     const newPlayers = [...players, newPlayer];
     setPlayers(newPlayers);
     setNumPlayers(newPlayers.length);
@@ -2122,7 +2219,15 @@ export default function NewGamePlusScorekeeper() {
 
       if (currentShotLog.length > 0) {
         const shotRows = currentShotLog.map(s => ({ ...s, game_id: newGameId }));
-        await supabase.from("shots").insert(shotRows);
+        let { error: shotsErr } = await supabase.from("shots").insert(shotRows);
+        if (shotsErr && shotRows.some(r => r.ghost_assists)) {
+          // Probably the ghost_assists column is missing: keep the shot log rather than lose it.
+          ({ error: shotsErr } = await supabase.from("shots").insert(shotRows.map(({ ghost_assists, ...rest }) => rest)));
+          setSaveWarning(shotsErr ? "Game saved, but the shot log failed to save."
+            : "Game saved, but ghost assists weren't stored — add the ghost_assists column to the shots table.");
+        } else if (shotsErr) {
+          setSaveWarning("Game saved, but the shot log failed to save.");
+        }
       }
 
       setGameSaved(true);
@@ -2174,6 +2279,25 @@ export default function NewGamePlusScorekeeper() {
     return storylines;
   }, [shotLog, players]);
 
+  // Shot-by-shot verification: replay the log with a running total per player.
+  const shotLogView = useMemo(() => {
+    const running = {};
+    const rows = shotLog.map((s, i) => {
+      const delta = shotPointDelta(s);
+      running[s.player_name] = (running[s.player_name] || 0) + delta;
+      return { n: i + 1, shot: s, delta, total: running[s.player_name] };
+    });
+    return { rows, running };
+  }, [shotLog]);
+
+  // This game's ghost leaderboard (shown on the GG's Joe screen).
+  const ghostBoard = useMemo(
+    () => Object.entries(tallyGhostAssists(shotLog))
+      .map(([name, t]) => ({ name, scratches: t.scratches, points: t.points }))
+      .sort((a, b) => b.points - a.points || b.scratches - a.scratches),
+    [shotLog]
+  );
+
   // Mirror the in-progress game to localStorage so a refresh doesn't lose it.
   useEffect(() => {
     if (!gameStarted) { clearCachedGame(); return; }
@@ -2182,12 +2306,12 @@ export default function NewGamePlusScorekeeper() {
         savedAt: Date.now(),
         state: {
           numPlayers, players, currentPlayerIndex, targetBall, history, gameStarted,
-          selectedPlayers, gamblingPlayers, gameEndedEarly, gameId, gameSaved, shotLog,
+          selectedPlayers, gamblingPlayers, gameEndedEarly, gameId, gameSaved, shotLog, litGhostIds,
         },
       }));
     } catch { /* storage full or unavailable: caching is best-effort */ }
   }, [numPlayers, players, currentPlayerIndex, targetBall, history, gameStarted,
-      selectedPlayers, gamblingPlayers, gameEndedEarly, gameId, gameSaved, shotLog]);
+      selectedPlayers, gamblingPlayers, gameEndedEarly, gameId, gameSaved, shotLog, litGhostIds]);
 
   // Auto-save when winner is determined
   useEffect(() => {
@@ -2435,10 +2559,58 @@ export default function NewGamePlusScorekeeper() {
           </div>
         )}
 
+        {/* Shot Log Modal */}
+        {showShotLog && (() => {
+          const names = [...new Set(shotLogView.rows.map(r => r.shot.player_name))];
+          const rows = shotLogView.rows.filter(r => logFilter === 'all' || r.shot.player_name === logFilter);
+          const off = players.filter(p => (shotLogView.running[p.name] || 0) !== p.score && (logFilter === 'all' || p.name === logFilter));
+          return (
+            <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4" onClick={() => setShowShotLog(false)}>
+              <div className="bg-gray-900 border-2 border-[#63667d] rounded-2xl max-w-md w-full flex flex-col" style={{ maxHeight: '85vh' }} onClick={(e) => e.stopPropagation()}>
+                <div className="flex justify-between items-center p-4 pb-2">
+                  <h2 className="text-xl font-black">📜 Shot Log</h2>
+                  <button onClick={() => setShowShotLog(false)} className="text-gray-400 hover:text-white text-2xl font-bold">✕</button>
+                </div>
+                <div className="flex gap-2 flex-wrap px-4 pb-2">
+                  {['all', ...names].map(n => (
+                    <button key={n} onClick={() => setLogFilter(n)}
+                      className={`px-3 py-1 rounded-lg text-xs font-bold ${logFilter === n ? 'bg-[#05e5af] text-[#14151d]' : 'bg-[#282a3b] text-[#c9c6be]'}`}>
+                      {n === 'all' ? 'Everyone' : n}
+                    </button>
+                  ))}
+                </div>
+                <div className={`mx-4 mb-2 text-xs rounded-lg px-3 py-2 ${off.length === 0 ? 'bg-green-900 text-green-200' : 'bg-orange-900 text-orange-200'}`}>
+                  {off.length === 0
+                    ? `✓ Log adds up to the score${logFilter === 'all' ? 's' : ''} on the card${logFilter === 'all' ? 's' : ''}`
+                    : off.map(p => <div key={p.id}>⚠ {p.name}: log adds to {shotLogView.running[p.name] || 0}, card shows {p.score}</div>)}
+                </div>
+                <div className="overflow-y-auto px-4 pb-4 space-y-1">
+                  {rows.length === 0 && <div className="text-center text-[#4fd8ac] text-sm py-6">No shots logged yet.</div>}
+                  {rows.map(r => (
+                    <div key={r.n} className="flex items-start gap-2 bg-[#282a3b] rounded-lg px-3 py-2 text-sm">
+                      <span className="text-[#4fd8ac] text-xs w-7 pt-0.5">#{r.n}</span>
+                      <div className="flex-1 min-w-0">
+                        <span className="font-semibold">{r.shot.player_name}</span>{' '}
+                        <span className="text-[#c9c6be]">{shotDescription(r.shot)}</span>
+                        {r.shot.ghost_assists?.length > 0 && <div className="text-xs text-purple-300">👻 {r.shot.ghost_assists.join(', ')}</div>}
+                      </div>
+                      <div className="text-right whitespace-nowrap">
+                        <div className={`font-black ${r.delta > 0 ? 'text-green-400' : r.delta < 0 ? 'text-red-400' : 'text-[#c9c6be]'}`}>{r.delta > 0 ? '+' : ''}{r.delta}</div>
+                        <div className="text-xs text-[#c9c6be]">→ {r.total}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Header */}
         <div className="flex justify-between items-center mb-4">
           <h1 className="text-2xl font-bold text-[#05e5af]">New Game +</h1>
           <div className="flex gap-2 items-center">
+            <button onClick={() => { setLogFilter('all'); setShowShotLog(true); }} title="Shot log" className="p-2 bg-[#4b4e63] hover:bg-[#63667d] rounded-lg text-sm font-bold">📜</button>
             <button onClick={() => setShowStats(true)} className="p-2 bg-[#4b4e63] hover:bg-[#63667d] rounded-lg text-sm font-bold">📊</button>
             {!winner && <button onClick={() => { setShowManagePlayers(true); setConfirmRemove(null); }} className="p-2 bg-[#4b4e63] hover:bg-[#63667d] rounded-lg text-sm font-bold">👥</button>}
             <button onClick={undo} disabled={history.length === 0} className="p-2 bg-yellow-600 rounded-lg disabled:opacity-50 text-sm font-bold">↩ Undo</button>
@@ -2474,9 +2646,22 @@ export default function NewGamePlusScorekeeper() {
                 <div key={player.id} className="text-lg">{index + 1}. {player.name}: {player.score} pts</div>
               ))}
             </div>
+            {ghostBoard.length > 0 && (
+              <div className="mt-5 mx-auto max-w-sm rounded-xl border border-purple-500 bg-[#1a1230] p-4 text-left" style={{ boxShadow: '0 0 24px rgba(168,85,247,0.3)' }}>
+                <div className="text-center font-black text-purple-300 text-lg">👻 Spooky Ghost Leaderboard</div>
+                <div className="text-center text-xs text-purple-200 opacity-80 mb-3">Ghosts who made people scratch</div>
+                {ghostBoard.map((g, i) => (
+                  <div key={g.name} className="flex items-center justify-between py-1">
+                    <span className="font-semibold">{i + 1}. {g.name}</span>
+                    <span className="text-sm text-purple-200">{g.scratches} scratch{g.scratches !== 1 ? 'es' : ''} · {g.points} pts</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="mt-4 text-sm min-h-6">
               {savingGame && <div className="text-[#c9c6be] animate-pulse">💾 Saving game to stats...</div>}
               {gameSaved && <div className="text-green-400">✓ Game saved to stats</div>}
+              {saveWarning && <div className="text-orange-300">⚠️ {saveWarning}</div>}
               {saveError && (
                 <div className="text-red-400">
                   ⚠️ Couldn't save: {saveError}
@@ -2511,12 +2696,19 @@ export default function NewGamePlusScorekeeper() {
                 <input type="text" value={player.name} onChange={(e) => updatePlayerName(index, e.target.value)}
                   className="bg-transparent font-semibold w-full outline-none text-sm" disabled={player.isDead || player.isInactive} />
                 <div className="flex gap-1 ml-2">
+                  {player.isDead && !player.isInactive && (
+                    <button onClick={() => setLitGhostIds(ids => ids.includes(player.id) ? ids.filter(x => x !== player.id) : [...ids, player.id])}
+                      title="Ghost assist: light this, then apply scratch points to credit this ghost"
+                      className={`px-2 py-1 rounded text-xs font-bold ${litGhostIds.includes(player.id) ? 'bg-purple-500 text-white ring-2 ring-purple-300' : 'bg-gray-600 text-white'}`}>
+                      👻
+                    </button>
+                  )}
                   <button onClick={() => togglePoison(index)} disabled={player.isDead || player.isInactive}
-                    className={`px-2 py-1 rounded text-xs font-bold ${(player.poisonLevel || 0) === 2 ? 'bg-[#4b4e63] text-white' : player.isPoisoned ? 'bg-red-600 text-white' : 'bg-gray-600 text-white'} disabled:opacity-30`}>
+                    className={`${player.isDead ? 'hidden' : ''} px-2 py-1 rounded text-xs font-bold ${(player.poisonLevel || 0) === 2 ? 'bg-[#4b4e63] text-white' : player.isPoisoned ? 'bg-red-600 text-white' : 'bg-gray-600 text-white'} disabled:opacity-30`}>
                     {(player.poisonLevel || 0) === 2 ? '☠️☠️' : '☠️'}
                   </button>
-                  <button onClick={() => toggleGamble(index)} disabled={index === currentPlayerIndex || player.isDead || player.isInactive}
-                    className={`px-2 py-1 rounded text-xs font-bold ${gamblingPlayers.includes(index) ? 'bg-green-600 text-white' : index === currentPlayerIndex || player.isDead || player.isInactive ? 'bg-gray-400 text-gray-600 cursor-not-allowed' : 'bg-gray-600 text-white'}`}>
+                  <button onClick={() => toggleGamble(index)} disabled={index === currentPlayerIndex || player.isInactive}
+                    className={`px-2 py-1 rounded text-xs font-bold ${gamblingPlayers.includes(index) ? 'bg-green-600 text-white' : index === currentPlayerIndex || player.isInactive ? 'bg-gray-400 text-gray-600 cursor-not-allowed' : 'bg-gray-600 text-white'}`}>
                     🎲
                   </button>
                 </div>
@@ -2552,7 +2744,7 @@ export default function NewGamePlusScorekeeper() {
                 {player.isInactive && !player.isDead && <div className="font-semibold text-[#c9c6be]">💤 INACTIVE</div>}
                 {player.poisonLevel === 2 && !player.isDead && <div className="font-semibold text-[#4fd8ac]">DOUBLE POISON</div>}
                 {player.poisonLevel === 1 && !player.isDead && <div className="font-semibold text-red-400">POISONED</div>}
-                {gamblingPlayers.includes(index) && !player.isDead && <div className="font-semibold text-green-400">GAMBLING</div>}
+                {gamblingPlayers.includes(index) && <div className="font-semibold text-green-400">GAMBLING</div>}
               </div>
             </div>
             );
@@ -2604,6 +2796,9 @@ export default function NewGamePlusScorekeeper() {
 
               <div className="bg-red-700 p-4 rounded-lg">
                 <h3 className="font-semibold mb-2">✗ Scratches</h3>
+                {players.some(p => p.isDead && litGhostIds.includes(p.id)) && (
+                  <div className="text-xs text-purple-200 mb-2">👻 Crediting {players.filter(p => p.isDead && litGhostIds.includes(p.id)).map(p => p.name).join(", ")} for this scratch</div>
+                )}
                 <div className="space-y-2">
                   <ScratchBallSelector onSelectBall={scratchOnBall} label="Hit Wrong Ball" />
                   <ScratchBallSelector onSelectBall={scratchBallAndPocket} label="Wrong Ball + Pocket" />
