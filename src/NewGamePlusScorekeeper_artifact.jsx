@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   BarChart, Bar, Cell,
@@ -1671,6 +1671,54 @@ const clearCachedGame = () => {
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
+// ─── HOUSE RULES ──────────────────────────────────────────────────────────────
+const DEFAULT_RULES = {
+  startGhosts: false, ghostCount: 1,
+  customDice: false, diceOutcomes: ["death"],   // default dice: 1 death roll, 5 safe
+  countsForLeaderboard: true,
+  ballBoost: false, boostLaps: 1,               // ×2 after N laps, ×3 after N more
+};
+const DICE_PENALTIES = ["death", "reverse", "shuffle", "bubblegum", "cemetery"];
+const DICE_OUTCOMES = {
+  death:     { emoji: "👻", label: "Death roll", title: "DEAD! 💀", color: "text-red-400", desc: (n) => `${n} is eliminated!` },
+  reverse:   { emoji: "⏪", label: "Reverse order", title: "REVERSE ORDER!", color: "text-sky-300", desc: () => "Turn order now goes the other way" },
+  shuffle:   { emoji: "🔀", label: "Randomize order", title: "SHUFFLE!", color: "text-yellow-300", desc: () => "Everybody gets a new seat" },
+  bubblegum: { emoji: "🫧", label: "Bubblegum", title: "BUBBLEGUM!", color: "text-pink-300", desc: (n) => `${n} is glued to one spot next turn` },
+  cemetery:  { emoji: "🪦", label: "Cemetery", title: "CEMETERY!", color: "text-fuchsia-300", desc: (n) => `On ${n}'s next turn everyone else is a ghost` },
+  safe:      { emoji: "😊", label: "Safe", title: "SAFE! ✨", color: "text-green-400", desc: (n) => `${n} survives!` },
+};
+const diceFaces = (rules) => {
+  const sel = rules.customDice ? rules.diceOutcomes : ["death"];
+  return [...sel, ...Array(Math.max(0, 6 - sel.length)).fill("safe")].slice(0, 6);
+};
+const GHOST_PATTERN = `url("data:image/svg+xml,${encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='30' height='30'><text x='2' y='22' font-size='18'>👻</text></svg>")}")`;
+
+const RuleToggle = ({ on, onChange, title, desc, children }) => (
+  <div className="bg-[#1d1f2c] rounded-lg p-3">
+    <button onClick={() => onChange(!on)} className="flex w-full items-center justify-between text-left gap-3">
+      <div>
+        <div className="font-semibold">{title}</div>
+        <div className="text-xs text-[#c9c6be]">{desc}</div>
+      </div>
+      <div className={`w-11 h-6 shrink-0 rounded-full p-0.5 ${on ? 'bg-[#05e5af]' : 'bg-[#4b4e63]'}`}>
+        <div className={`w-5 h-5 rounded-full bg-white transition-transform ${on ? 'translate-x-5' : ''}`} />
+      </div>
+    </button>
+    {on && children && <div className="mt-3">{children}</div>}
+  </div>
+);
+
+const Stepper = ({ label, value, min, max, onChange }) => (
+  <div className="flex items-center justify-between text-sm">
+    <span className="text-[#c9c6be]">{label}</span>
+    <div className="flex items-center gap-3">
+      <button onClick={() => onChange(Math.max(min, value - 1))} className="w-8 h-8 rounded bg-[#4b4e63] font-bold">−</button>
+      <span className="w-6 text-center font-black">{value}</span>
+      <button onClick={() => onChange(Math.min(max, value + 1))} className="w-8 h-8 rounded bg-[#4b4e63] font-bold">+</button>
+    </div>
+  </div>
+);
+
 export default function NewGamePlusScorekeeper() {
   const [cached] = useState(loadCachedGame); // restored once, on first load
   const [numPlayers, setNumPlayers] = useState(cached?.numPlayers ?? null);
@@ -1707,6 +1755,45 @@ export default function NewGamePlusScorekeeper() {
   const [showShotLog, setShowShotLog] = useState(false);
   const [logFilter, setLogFilter] = useState("all");
   const [saveWarning, setSaveWarning] = useState(null);
+  const [houseRules, setHouseRules] = useState(cached?.houseRules ?? DEFAULT_RULES);
+  const [showRules, setShowRules] = useState(false);
+  const [direction, setDirection] = useState(cached?.direction ?? 1); // 1 = forward, -1 = reversed
+  const [laps, setLaps] = useState(cached?.laps ?? 0);
+  const [lapSeen, setLapSeen] = useState(cached?.lapSeen ?? []);
+  const [shuffleTick, setShuffleTick] = useState(0);
+  const cardRefs = useRef({});
+  const shuffleFrom = useRef(null);
+  const houseRulesRef = useRef(houseRules);
+  houseRulesRef.current = houseRules;
+  const setRule = (patch) => setHouseRules(r => ({ ...r, ...patch }));
+
+  // Ball-value boost: ×2 after N laps (everyone has had a turn), ×3 after N more.
+  const ballMult = houseRules.ballBoost ? (laps >= 2 * houseRules.boostLaps ? 3 : laps >= houseRules.boostLaps ? 2 : 1) : 1;
+  const tbEff = targetBall * ballMult;
+
+  // Randomize Order: FLIP animation — cards start at their old spot and fly to the new one.
+  useLayoutEffect(() => {
+    const from = shuffleFrom.current;
+    if (!from) return;
+    shuffleFrom.current = null;
+    const ids = Object.keys(from);
+    ids.forEach((id) => {
+      const el = cardRefs.current[id];
+      if (!el) return;
+      const n = el.getBoundingClientRect();
+      el.style.transition = 'none';
+      el.style.zIndex = 5;
+      el.style.transform = `translate(${from[id].left - n.left}px, ${from[id].top - n.top}px) rotate(${(Math.random() - 0.5) * 24}deg) scale(0.92)`;
+    });
+    void document.body.offsetHeight; // force reflow so the transition runs
+    ids.forEach((id) => {
+      const el = cardRefs.current[id];
+      if (!el) return;
+      el.style.transition = 'transform 1.2s cubic-bezier(.34,1.45,.5,1)';
+      el.style.transform = '';
+      setTimeout(() => { el.style.transition = ''; el.style.zIndex = ''; }, 1300);
+    });
+  }, [shuffleTick]);
 
   const availablePlayers = [
     'Ryan', 'Joe', 'Gabby', 'Chase', 'Carlos', 'Spencer',
@@ -1737,10 +1824,17 @@ export default function NewGamePlusScorekeeper() {
     const newPlayers = shuffled.map((name, i) => ({
       id: i, name, score: 0, isPoisoned: false, poisonLevel: 0, isDead: false
     }));
+    let startIdx = 0;
+    if (houseRules.startGhosts) {
+      const k = Math.max(0, Math.min(houseRules.ghostCount, newPlayers.length - 1));
+      [...newPlayers.keys()].sort(() => Math.random() - 0.5).slice(0, k).forEach(i => { newPlayers[i].isDead = true; });
+      startIdx = Math.max(0, newPlayers.findIndex(p => !p.isDead));
+    }
     setPlayers(newPlayers);
     setNumPlayers(shuffled.length);
     setGameStarted(true);
-    setCurrentPlayerIndex(0);
+    setCurrentPlayerIndex(startIdx);
+    setDirection(1); setLaps(0); setLapSeen([]);
     setTargetBall(1);
     setHistory([]);
     setShotLog([]);
@@ -1757,17 +1851,64 @@ export default function NewGamePlusScorekeeper() {
     setDiceRolling(false);
   };
 
+  const applyShuffle = () => {
+    const from = {};
+    players.forEach(p => { const el = cardRefs.current[p.id]; if (el) from[p.id] = el.getBoundingClientRect(); });
+    shuffleFrom.current = from;
+    const curId = players[currentPlayerIndex]?.id;
+    const gambleIds = gamblingPlayers.map(i => players[i]?.id);
+    let order = [...players];
+    for (let tries = 0; tries < 5; tries++) {
+      order = [...players];
+      for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+      if (order.some((p, i) => p.id !== players[i].id)) break;
+    }
+    setPlayers(order);
+    setCurrentPlayerIndex(Math.max(0, order.findIndex(p => p.id === curId)));
+    setGamblingPlayers(gambleIds.map(id => order.findIndex(p => p.id === id)).filter(i => i >= 0));
+    setShuffleTick(t => t + 1);
+  };
+
+  const applyDiceEffect = (result, idx) => {
+    if (result === 'reverse') setDirection(d => -d);
+    else if (result === 'shuffle') applyShuffle();
+    else if (result === 'bubblegum' || result === 'cemetery') {
+      const np = [...players];
+      np[idx][result] = 'pending'; // becomes 'active' when their next turn starts
+      setPlayers(np);
+    }
+  };
+
+  // End-of-turn bookkeeping: clears the finished player's bubblegum/cemetery, starts the
+  // next player's, and counts laps for the ball-value boost. Mutates `arr`.
+  const afterTurn = (arr, takenIdxs, next) => {
+    const done = arr[takenIdxs[0]];
+    if (done?.bubblegum === 'active') done.bubblegum = false;
+    if (done?.cemetery === 'active') done.cemetery = false;
+    const np = arr[next];
+    if (np?.bubblegum === 'pending') np.bubblegum = 'active';
+    if (np?.cemetery === 'pending') np.cemetery = 'active';
+    if (houseRules.ballBoost) {
+      const seen = new Set([...lapSeen, ...takenIdxs.map(i => arr[i].id)]);
+      const eligible = arr.filter(q => !q.isInactive && !q.isDead);
+      if (eligible.length > 0 && eligible.every(q => seen.has(q.id))) { setLaps(l => l + 1); setLapSeen([]); }
+      else setLapSeen([...seen]);
+    }
+  };
+
   const rollDice = () => {
-    const result = Math.random() < (1 / 6) ? 'ghost' : 'smile';
+    const faces = diceFaces(houseRules);
+    const result = faces[Math.floor(Math.random() * faces.length)];
     setDiceRolling(true);
     setTimeout(() => {
       setDiceRolling(false);
       setDiceResult(result);
-      logShot(players[rollingPlayer]?.name, 'death_roll', targetBall, result);
+      // 'ghost' / 'smile' keep the stats' death-roll counting intact
+      logShot(players[rollingPlayer]?.name, 'death_roll', targetBall, result === 'death' ? 'ghost' : result === 'safe' ? 'smile' : result);
       setTimeout(() => {
         setShowDiceRoll(false);
         setDiceResult(null);
-        if (result === 'ghost') {
+        if (result === 'death') {
           // Hand off to the Fatality sequence instead of killing immediately —
           // rollingPlayer stays set until finishFatality() actually applies it.
           const anim = FATALITY_ANIMATIONS[Math.floor(Math.random() * FATALITY_ANIMATIONS.length)];
@@ -1775,6 +1916,7 @@ export default function NewGamePlusScorekeeper() {
           setShowFatality(true);
           fatalityTimeoutRef.current = setTimeout(finishFatality, 3400);
         } else {
+          applyDiceEffect(result, rollingPlayer);
           setRollingPlayer(null);
         }
       }, 2200);
@@ -1835,7 +1977,7 @@ export default function NewGamePlusScorekeeper() {
     const newPlayers = [...currentPlayers];
     let changed = false;
     newPlayers.forEach((ghost) => {
-      if (!ghost.isDead) return;
+      if (!ghost.isDead || ghost.isInactive) return; // an inactive ghost is out of play
       const below = newPlayers.filter(p => p !== ghost && !p.isDead && p.score < ghost.score);
       if (below.length === 0) return;
       const worst = Math.min(...below.map(p => p.score));
@@ -1854,7 +1996,8 @@ export default function NewGamePlusScorekeeper() {
     players: JSON.parse(JSON.stringify(players)),
     currentPlayerIndex,
     targetBall,
-    shotLogLength: shotLog.length
+    shotLogLength: shotLog.length,
+    laps, lapSeen, direction
   });
 
   const updatePlayerName = (index, name) => {
@@ -1919,43 +2062,47 @@ export default function NewGamePlusScorekeeper() {
 
   const hitTargetBall = () => {
     setHistory(h => [...h, saveState()]);
-    logShot(players[currentPlayerIndex].name, 'hit', targetBall, null, targetBall);
+    logShot(players[currentPlayerIndex].name, 'hit', targetBall, null, tbEff);
     const newPlayers = [...players];
-    newPlayers[currentPlayerIndex].score += targetBall;
+    newPlayers[currentPlayerIndex].score += tbEff;
     setPlayers(checkForResurrection(newPlayers));
     setTargetBall(t => t === 15 ? 16 : t + 1);
   };
 
   const ricochetShot = () => {
     setHistory(h => [...h, saveState()]);
-    logShot(players[currentPlayerIndex].name, 'ricochet', targetBall, null, targetBall * 2);
+    logShot(players[currentPlayerIndex].name, 'ricochet', targetBall, null, tbEff * 2);
     const newPlayers = [...players];
-    newPlayers[currentPlayerIndex].score += targetBall * 2;
+    newPlayers[currentPlayerIndex].score += tbEff * 2;
     setPlayers(checkForResurrection(newPlayers));
     setTargetBall(t => t === 15 ? 16 : t + 1);
   };
 
+  // A ghost right now: dead, or (Cemetery) anyone but the cemetery player during their turn.
+  const isGhostNow = (q) => !q.isInactive && (q.isDead ||
+    (players[currentPlayerIndex]?.cemetery === 'active' && q !== players[currentPlayerIndex]));
+
   // Lit ghosts (dead players with the 👻 on) get credited on this scratch, then reset.
   const takeGhostAssists = () => {
-    const names = players.filter(p => p.isDead && litGhostIds.includes(p.id)).map(p => p.name);
+    const names = players.filter(p => isGhostNow(p) && litGhostIds.includes(p.id)).map(p => p.name);
     setLitGhostIds([]);
     return names;
   };
 
   const scratchOnBall = (ballNumber) => {
     setHistory(h => [...h, saveState()]);
-    logShot(players[currentPlayerIndex].name, 'scratch', ballNumber, null, -ballNumber, takeGhostAssists());
+    logShot(players[currentPlayerIndex].name, 'scratch', ballNumber, null, -ballNumber * ballMult, takeGhostAssists());
     const newPlayers = [...players];
-    newPlayers[currentPlayerIndex].score -= ballNumber;
+    newPlayers[currentPlayerIndex].score -= ballNumber * ballMult;
     setPlayers(checkForResurrection(newPlayers));
     if (ballNumber === 8 || ballNumber === 15) triggerDeathRoll(currentPlayerIndex);
   };
 
   const scratchBallAndPocket = (ballNumber) => {
     setHistory(h => [...h, saveState()]);
-    logShot(players[currentPlayerIndex].name, 'scratch_pocket', ballNumber, null, -(ballNumber + 3), takeGhostAssists());
+    logShot(players[currentPlayerIndex].name, 'scratch_pocket', ballNumber, null, -(ballNumber * ballMult + 3), takeGhostAssists());
     const newPlayers = [...players];
-    newPlayers[currentPlayerIndex].score -= (ballNumber + 3);
+    newPlayers[currentPlayerIndex].score -= (ballNumber * ballMult + 3);
     setPlayers(checkForResurrection(newPlayers));
     if (ballNumber === 8 || ballNumber === 15) triggerDeathRoll(currentPlayerIndex);
   };
@@ -1965,8 +2112,8 @@ export default function NewGamePlusScorekeeper() {
     setHistory(h => [...h, saveState()]);
     const newPlayers = [...players];
     gamblingPlayers.forEach(i => {
-      logShot(players[i].name, won ? 'gamble_win' : 'gamble_loss', targetBall, null, won ? targetBall : -targetBall);
-      newPlayers[i].score += won ? targetBall : -targetBall;
+      logShot(players[i].name, won ? 'gamble_win' : 'gamble_loss', targetBall, null, won ? tbEff : -tbEff);
+      newPlayers[i].score += won ? tbEff : -tbEff;
     });
     setPlayers(checkForResurrection(newPlayers));
     setGamblingPlayers([]);
@@ -1977,23 +2124,23 @@ export default function NewGamePlusScorekeeper() {
     const newPlayers = [...players];
     if (outcome === 'made') {
       gamblingPlayers.forEach(i => {
-        logShot(players[i].name, 'abraham_clinkin_made', targetBall, null, -targetBall);
-        newPlayers[i].score -= targetBall;
+        logShot(players[i].name, 'abraham_clinkin_made', targetBall, null, -tbEff);
+        newPlayers[i].score -= tbEff;
       });
-      const shooterGain = targetBall * gamblingPlayers.length;
+      const shooterGain = tbEff * gamblingPlayers.length;
       logShot(players[currentPlayerIndex].name, 'abraham_clinkin_made', targetBall, null, shooterGain);
       newPlayers[currentPlayerIndex].score += shooterGain;
     } else if (outcome === 'noScratch') {
       gamblingPlayers.forEach(i => {
-        logShot(players[i].name, 'abraham_clinkin_noScratch', targetBall, null, -targetBall);
-        newPlayers[i].score -= targetBall;
+        logShot(players[i].name, 'abraham_clinkin_noScratch', targetBall, null, -tbEff);
+        newPlayers[i].score -= tbEff;
       });
-      logShot(players[currentPlayerIndex].name, 'abraham_clinkin_noScratch', targetBall, null, targetBall);
-      newPlayers[currentPlayerIndex].score += targetBall;
+      logShot(players[currentPlayerIndex].name, 'abraham_clinkin_noScratch', targetBall, null, tbEff);
+      newPlayers[currentPlayerIndex].score += tbEff;
     } else {
       gamblingPlayers.forEach(i => {
-        logShot(players[i].name, 'abraham_clinkin_scratch', targetBall, null, targetBall);
-        newPlayers[i].score += targetBall;
+        logShot(players[i].name, 'abraham_clinkin_scratch', targetBall, null, tbEff);
+        newPlayers[i].score += tbEff;
       });
       logShot(players[currentPlayerIndex].name, 'abraham_clinkin_scratch', targetBall, null, 0);
     }
@@ -2046,7 +2193,7 @@ export default function NewGamePlusScorekeeper() {
   const nextSeat = (playersArray, from, skipDead) => {
     let idx = from;
     for (let i = 0; i < playersArray.length; i++) {
-      idx = (idx + 1) % playersArray.length;
+      idx = (idx + direction + playersArray.length) % playersArray.length;
       const p = playersArray[idx];
       if (p.isInactive) { applyInactivePenalty(playersArray, idx); continue; }
       if (skipDead && p.isDead) continue;
@@ -2059,6 +2206,7 @@ export default function NewGamePlusScorekeeper() {
     const newPlayers = applyPoisonTick([...snapshot], currentPlayerIndex);
     const checked = checkForResurrection(newPlayers);
     const next = nextSeat(checked, currentPlayerIndex, true);
+    afterTurn(checked, [currentPlayerIndex], next);
     setPlayers(checkForResurrection(checked));
     setCurrentPlayerIndex(next);
     setLitGhostIds([]);
@@ -2073,6 +2221,7 @@ export default function NewGamePlusScorekeeper() {
     if (skippedIndex !== currentPlayerIndex) applyPoisonTick(working, skippedIndex);
     const checked = checkForResurrection(working);
     const next = nextSeat(checked, skippedIndex, true);
+    afterTurn(checked, [currentPlayerIndex, skippedIndex], next);
     setPlayers(checkForResurrection(checked));
     setCurrentPlayerIndex(next);
     setLitGhostIds([]);
@@ -2134,7 +2283,7 @@ export default function NewGamePlusScorekeeper() {
       setTimeout(() => {
         setShowCoinFlip(false);
         setCoinResult(null);
-        setHistory(h => [...h, { players: snapshot, currentPlayerIndex: snapIndex, targetBall, shotLogLength: shotLog.length }]);
+        setHistory(h => [...h, { players: snapshot, currentPlayerIndex: snapIndex, targetBall, shotLogLength: shotLog.length, laps, lapSeen, direction }]);
         if (result === 'single') {
           doSingleTap(snapshot);
         } else {
@@ -2153,6 +2302,7 @@ export default function NewGamePlusScorekeeper() {
     // drop the log rows the undone action created so the log matches the scores
     if (last.shotLogLength !== undefined) setShotLog(prev => prev.slice(0, last.shotLogLength));
     setLitGhostIds([]);
+    if (last.laps !== undefined) { setLaps(last.laps); setLapSeen(last.lapSeen); setDirection(last.direction); }
     setHistory(history.slice(0, -1));
   };
 
@@ -2165,6 +2315,7 @@ export default function NewGamePlusScorekeeper() {
     setGameEndedEarly(false); setShowEndGameConfirm(false);
     setShotLog([]); setGameId(null); setGameSaved(false); setSaveError(null);
     setLitGhostIds([]); setSaveWarning(null);
+    setDirection(1); setLaps(0); setLapSeen([]);
   };
 
   const addPlayer = (name) => {
@@ -2188,6 +2339,8 @@ export default function NewGamePlusScorekeeper() {
   };
 
   const saveGameToSupabase = useCallback(async (finalPlayers, endedEarly, finalTargetBall, currentShotLog) => {
+    // House rule: games that don't count toward the leaderboard are never written to the database.
+    if (!houseRulesRef.current.countsForLeaderboard) { setGameSaved(true); return; }
     setSavingGame(true);
     setSaveError(null);
     try {
@@ -2307,11 +2460,12 @@ export default function NewGamePlusScorekeeper() {
         state: {
           numPlayers, players, currentPlayerIndex, targetBall, history, gameStarted,
           selectedPlayers, gamblingPlayers, gameEndedEarly, gameId, gameSaved, shotLog, litGhostIds,
+          houseRules, direction, laps, lapSeen,
         },
       }));
     } catch { /* storage full or unavailable: caching is best-effort */ }
   }, [numPlayers, players, currentPlayerIndex, targetBall, history, gameStarted,
-      selectedPlayers, gamblingPlayers, gameEndedEarly, gameId, gameSaved, shotLog, litGhostIds]);
+      selectedPlayers, gamblingPlayers, gameEndedEarly, gameId, gameSaved, shotLog, litGhostIds, houseRules, direction, laps, lapSeen]);
 
   // Auto-save when winner is determined
   useEffect(() => {
@@ -2342,6 +2496,35 @@ export default function NewGamePlusScorekeeper() {
               </button>
             ))}
           </div>
+          <button onClick={() => setShowRules(s => !s)} className="w-full mb-3 bg-[#4b4e63] hover:bg-[#363849] p-3 rounded-lg font-bold flex justify-between">
+            <span>🏠 House Rules{[houseRules.startGhosts, houseRules.customDice, houseRules.ballBoost, !houseRules.countsForLeaderboard].filter(Boolean).length > 0 ? ` (${[houseRules.startGhosts, houseRules.customDice, houseRules.ballBoost, !houseRules.countsForLeaderboard].filter(Boolean).length} on)` : ''}</span>
+            <span>{showRules ? '▲' : '▼'}</span>
+          </button>
+          {showRules && (
+            <div className="space-y-2 mb-4">
+              <RuleToggle on={houseRules.startGhosts} onChange={(v) => setRule({ startGhosts: v })} title="👻 Start with ghosts" desc="Random starting players begin the game dead">
+                <Stepper label="Number of ghosts" value={houseRules.ghostCount} min={1} max={Math.max(1, selectedPlayers.length - 1)} onChange={(v) => setRule({ ghostCount: v })} />
+              </RuleToggle>
+              <RuleToggle on={houseRules.customDice} onChange={(v) => setRule({ customDice: v })} title="🎲 Custom dice penalties" desc="Default: 1 death roll, 5 safe">
+                <div className="flex flex-wrap gap-2">
+                  {DICE_PENALTIES.map(k => {
+                    const sel = houseRules.diceOutcomes.includes(k);
+                    return (
+                      <button key={k} onClick={() => setRule({ diceOutcomes: sel ? houseRules.diceOutcomes.filter(x => x !== k) : [...houseRules.diceOutcomes, k] })}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-bold ${sel ? 'bg-[#05e5af] text-[#14151d]' : 'bg-[#4b4e63]'}`}>
+                        {DICE_OUTCOMES[k].emoji} {DICE_OUTCOMES[k].label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="text-xs text-[#c9c6be] mt-2">{houseRules.diceOutcomes.length} penalt{houseRules.diceOutcomes.length === 1 ? 'y' : 'ies'} on the dice — the other {6 - houseRules.diceOutcomes.length} face{6 - houseRules.diceOutcomes.length === 1 ? ' is' : 's are'} safe</div>
+              </RuleToggle>
+              <RuleToggle on={houseRules.ballBoost} onChange={(v) => setRule({ ballBoost: v })} title="🔁 Ball value boost" desc="Ball values double, then triple, as the game goes around the table">
+                <Stepper label="Laps before ×2 (×3 after that many more)" value={houseRules.boostLaps} min={1} max={10} onChange={(v) => setRule({ boostLaps: v })} />
+              </RuleToggle>
+              <RuleToggle on={houseRules.countsForLeaderboard} onChange={(v) => setRule({ countsForLeaderboard: v })} title="🏆 Counts toward leaderboard" desc="Turn off for a practice game that isn't saved to stats" />
+            </div>
+          )}
           <button onClick={startGame} disabled={selectedPlayers.length < 2}
             className="w-full bg-[#ff8736] hover:bg-[#e6752b] text-[#14151d] p-4 rounded-lg font-bold text-xl disabled:opacity-50 disabled:cursor-not-allowed">
             Start Game
@@ -2362,21 +2545,17 @@ export default function NewGamePlusScorekeeper() {
         {showDiceRoll && (
           <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
             <div className="bg-gray-900 border-2 border-red-700 p-8 rounded-2xl text-center max-w-md w-full mx-4 shadow-2xl">
-              <h2 className="text-3xl font-bold mb-2">💀 DEATH ROLL 💀</h2>
+              <h2 className="text-3xl font-bold mb-2">🎲 DICE ROLL 🎲</h2>
               <p className="text-lg text-red-300 mb-2">{players[rollingPlayer]?.name} scratched on the {targetBall === 8 ? '8' : '15'} ball!</p>
-              <div className="text-xs text-gray-500 mb-5">1-in-6 chance of death</div>
+              <div className="text-xs text-gray-400 mb-5">Faces: {diceFaces(houseRules).map(f => DICE_OUTCOMES[f].emoji).join(' ')}</div>
               <div className="min-h-32 flex flex-col items-center justify-center mb-6">
                 {!diceRolling && diceResult === null && <div className="text-7xl animate-bounce">🎲</div>}
                 {diceRolling && <div className="dice-roll-anim text-7xl">🎲</div>}
                 {diceResult !== null && (
                   <>
-                    <div className="text-8xl mb-3 animate-bounce">{diceResult === 'ghost' ? '👻' : '😊'}</div>
-                    <div className={`text-2xl font-black ${diceResult === 'ghost' ? 'text-red-400' : 'text-green-400'}`}>
-                      {diceResult === 'ghost' ? 'DEAD! 💀' : 'SAFE! ✨'}
-                    </div>
-                    <div className="text-sm text-gray-400 mt-2">
-                      {diceResult === 'ghost' ? `${players[rollingPlayer]?.name} is eliminated!` : `${players[rollingPlayer]?.name} survives!`}
-                    </div>
+                    <div className="text-8xl mb-3 animate-bounce">{DICE_OUTCOMES[diceResult]?.emoji}</div>
+                    <div className={`text-2xl font-black ${DICE_OUTCOMES[diceResult]?.color}`}>{DICE_OUTCOMES[diceResult]?.title}</div>
+                    <div className="text-sm text-gray-400 mt-2">{DICE_OUTCOMES[diceResult]?.desc(players[rollingPlayer]?.name)}</div>
                   </>
                 )}
               </div>
@@ -2627,7 +2806,11 @@ export default function NewGamePlusScorekeeper() {
               {currentPlayer.poisonLevel === 1 && <div className="text-center text-red-300 text-sm">⚠️ Poisoned! Lose 5 points this turn</div>}
             </div>
             <div className="bg-[#282a3b] p-4 rounded-lg mb-4 text-center">
-              <div className="text-2xl font-bold">Target Ball: {targetBall}</div>
+              <div className="text-2xl font-bold">Target Ball: {targetBall}{ballMult > 1 && <span className="text-[#ff8736]"> ×{ballMult}</span>}</div>
+              {houseRules.ballBoost && <div className="text-xs text-[#c9c6be]">Lap {laps + 1}{ballMult > 1 ? ` · ball values ×${ballMult}` : ''}</div>}
+              {direction === -1 && <div className="text-sm text-sky-300">⏪ Turn order reversed</div>}
+              {currentPlayer.bubblegum === 'active' && <div className="text-sm text-pink-300 font-bold">🫧 Glued to one spot this turn!</div>}
+              {currentPlayer.cemetery === 'active' && <div className="text-sm text-fuchsia-300 font-bold">🪦 Everyone else is a ghost this turn</div>}
             </div>
           </>
         )}
@@ -2660,7 +2843,7 @@ export default function NewGamePlusScorekeeper() {
             )}
             <div className="mt-4 text-sm min-h-6">
               {savingGame && <div className="text-[#c9c6be] animate-pulse">💾 Saving game to stats...</div>}
-              {gameSaved && <div className="text-green-400">✓ Game saved to stats</div>}
+              {gameSaved && <div className="text-green-400">{houseRules.countsForLeaderboard ? '✓ Game saved to stats' : '🧪 Not counted toward the leaderboard (house rules)'}</div>}
               {saveWarning && <div className="text-orange-300">⚠️ {saveWarning}</div>}
               {saveError && (
                 <div className="text-red-400">
@@ -2687,16 +2870,19 @@ export default function NewGamePlusScorekeeper() {
                 : (storyline.tier === 2 ? 'storyline-cold-2' : 'storyline-cold-1')
               : '';
             return (
-            <div key={player.id} className={`p-3 rounded-lg ${
+            <div key={player.id} ref={(el) => { cardRefs.current[player.id] = el; }} className={`relative overflow-hidden p-3 rounded-lg ${
               player.isDead ? 'bg-gray-800 opacity-60' :
               player.isInactive ? 'bg-gray-800 opacity-50 grayscale' :
+              player.cemetery ? `bg-indigo-950 ring-4 ${index === currentPlayerIndex && !winner ? 'ring-yellow-300' : 'ring-fuchsia-400'}` :
+              player.bubblegum ? `bg-pink-400 text-black ring-4 ${index === currentPlayerIndex && !winner ? 'ring-yellow-300' : 'ring-pink-200'}` :
               index === currentPlayerIndex && !winner ? 'bg-yellow-500 text-black ring-4 ring-yellow-300' : 'bg-[#282a3b]'
-            } ${gamblingPlayers.includes(index) ? 'ring-4 ring-green-400' : ''} ${player.isDead || player.isInactive ? '' : storylineClass}`}>
+            } ${gamblingPlayers.includes(index) ? 'ring-4 ring-green-400' : ''} ${player.isDead || player.isInactive ? '' : storylineClass} ${isGhostNow(player) && !player.isDead ? 'opacity-70 saturate-50' : ''}`}>
               <div className="flex items-center justify-between mb-1">
+                {player.cemetery && <div className="absolute inset-0 pointer-events-none opacity-30" style={{ backgroundImage: GHOST_PATTERN }} />}
                 <input type="text" value={player.name} onChange={(e) => updatePlayerName(index, e.target.value)}
                   className="bg-transparent font-semibold w-full outline-none text-sm" disabled={player.isDead || player.isInactive} />
                 <div className="flex gap-1 ml-2">
-                  {player.isDead && !player.isInactive && (
+                  {isGhostNow(player) && (
                     <button onClick={() => setLitGhostIds(ids => ids.includes(player.id) ? ids.filter(x => x !== player.id) : [...ids, player.id])}
                       title="Ghost assist: light this, then apply scratch points to credit this ghost"
                       className={`px-2 py-1 rounded text-xs font-bold ${litGhostIds.includes(player.id) ? 'bg-purple-500 text-white ring-2 ring-purple-300' : 'bg-gray-600 text-white'}`}>
@@ -2725,6 +2911,9 @@ export default function NewGamePlusScorekeeper() {
                 <div onClick={() => setEditingScore(index)} className="text-3xl font-bold cursor-pointer hover:opacity-80" title="Click to edit">{player.score}</div>
               )}
 
+              {player.bubblegum && <div className="text-[11px] font-black mt-0.5">🫧 {player.bubblegum === 'active' ? 'GLUED TO ONE SPOT!' : 'Bubblegum — glued next turn'}</div>}
+              {player.cemetery && <div className="text-[11px] font-black mt-0.5 text-fuchsia-300">🪦 {player.cemetery === 'active' ? 'CEMETERY — everyone else is a ghost!' : 'Cemetery — next turn'}</div>}
+              {isGhostNow(player) && !player.isDead && <div className="text-[11px] font-black mt-0.5">👻 cemetery ghost (this turn)</div>}
               {storyline && !player.isDead && !player.isInactive && (
                 <div className={`text-[11px] font-black mt-0.5 ${storyline.kind === 'hot' ? 'text-[#ff8736]' : 'text-[#9fb4d1]'}`}>
                   {storyline.label}
@@ -2761,13 +2950,13 @@ export default function NewGamePlusScorekeeper() {
                     <div className="text-center mb-3 font-semibold">{currentPlayer.name} vs EVERYONE ELSE!</div>
                     <div className="space-y-2">
                       <button onClick={() => resolveAbrahamClinkin('made')} className="w-full bg-yellow-500 text-black p-4 rounded-lg font-black text-lg">
-                        ⚡ MADE IT!<div className="text-sm font-semibold">{currentPlayer.name} steals {targetBall}pts from each!</div>
+                        ⚡ MADE IT!<div className="text-sm font-semibold">{currentPlayer.name} steals {tbEff}pts from each!</div>
                       </button>
                       <button onClick={() => resolveAbrahamClinkin('noScratch')} className="w-full bg-orange-600 p-4 rounded-lg font-black text-lg">
-                        😐 NO SCRATCH<div className="text-sm font-semibold">Gamblers lose {targetBall}pts, {currentPlayer.name} gets {targetBall}pts</div>
+                        😐 NO SCRATCH<div className="text-sm font-semibold">Gamblers lose {tbEff}pts, {currentPlayer.name} gets {tbEff}pts</div>
                       </button>
                       <button onClick={() => resolveAbrahamClinkin('scratch')} className="w-full bg-red-600 p-4 rounded-lg font-black text-lg">
-                        💥 SCRATCHED!<div className="text-sm font-semibold">Gamblers get +{targetBall}pts, apply scratch separately</div>
+                        💥 SCRATCHED!<div className="text-sm font-semibold">Gamblers get +{tbEff}pts, apply scratch separately</div>
                       </button>
                     </div>
                   </>
@@ -2775,8 +2964,8 @@ export default function NewGamePlusScorekeeper() {
                   <>
                     <h3 className="font-semibold mb-2 text-center">🎲 {gamblingPlayers.length} Player{gamblingPlayers.length > 1 ? 's' : ''} Gambling</h3>
                     <div className="grid grid-cols-2 gap-2">
-                      <button onClick={() => resolveGamble(true)} className="bg-green-600 p-3 rounded-lg font-semibold">✓ They Won (+{targetBall} pts)</button>
-                      <button onClick={() => resolveGamble(false)} className="bg-red-600 p-3 rounded-lg font-semibold">✗ They Lost (-{targetBall} pts)</button>
+                      <button onClick={() => resolveGamble(true)} className="bg-green-600 p-3 rounded-lg font-semibold">✓ They Won (+{tbEff} pts)</button>
+                      <button onClick={() => resolveGamble(false)} className="bg-red-600 p-3 rounded-lg font-semibold">✗ They Lost (-{tbEff} pts)</button>
                     </div>
                   </>
                 )}
@@ -2789,15 +2978,15 @@ export default function NewGamePlusScorekeeper() {
               <div className="bg-green-700 p-4 rounded-lg">
                 <h3 className="font-semibold mb-2">✓ Success</h3>
                 <div className="space-y-2">
-                  <button onClick={hitTargetBall} className="w-full bg-green-600 p-3 rounded-lg font-semibold">Hit Target Ball #{targetBall} (+{targetBall} pts)</button>
-                  <button onClick={ricochetShot} className="w-full bg-green-500 p-3 rounded-lg font-semibold">🎯 Ricochet Ball #{targetBall} (+{targetBall * 2} pts)</button>
+                  <button onClick={hitTargetBall} className="w-full bg-green-600 p-3 rounded-lg font-semibold">Hit Target Ball #{targetBall} (+{tbEff} pts)</button>
+                  <button onClick={ricochetShot} className="w-full bg-green-500 p-3 rounded-lg font-semibold">🎯 Ricochet Ball #{targetBall} (+{tbEff * 2} pts)</button>
                 </div>
               </div>
 
               <div className="bg-red-700 p-4 rounded-lg">
                 <h3 className="font-semibold mb-2">✗ Scratches</h3>
-                {players.some(p => p.isDead && litGhostIds.includes(p.id)) && (
-                  <div className="text-xs text-purple-200 mb-2">👻 Crediting {players.filter(p => p.isDead && litGhostIds.includes(p.id)).map(p => p.name).join(", ")} for this scratch</div>
+                {players.some(p => isGhostNow(p) && litGhostIds.includes(p.id)) && (
+                  <div className="text-xs text-purple-200 mb-2">👻 Crediting {players.filter(p => isGhostNow(p) && litGhostIds.includes(p.id)).map(p => p.name).join(", ")} for this scratch</div>
                 )}
                 <div className="space-y-2">
                   <ScratchBallSelector onSelectBall={scratchOnBall} label="Hit Wrong Ball" />
